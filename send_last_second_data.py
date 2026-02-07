@@ -1,10 +1,13 @@
 import mysql.connector
 import json
+import os
 import time
 import requests
 from get_device_id import *
 from get_user_info import *
 import threading
+
+POLL_INTERVAL = int(os.getenv('SEND_DATA_POLL_INTERVAL', '10'))
 
 # Function to send data to the API
 def send_data_to_api(url, bearer_token, device_id, json_data):
@@ -42,69 +45,79 @@ bearer_token = get_user_info('auth_key')
 # Track the last sent ID to avoid duplicates
 last_sent_id = 0
 
+# Persistent DB connection (reused across iterations)
+conn = None
+
 while True:
     try:
-        # Connect to MySQL database
-        with mysql.connector.connect(
-            host="127.0.0.1",
-            user="root",
-            password="raspberry@123",
-            database="car"
-        ) as conn:
-            cursor = conn.cursor(dictionary=True)
+        # Reuse connection; reconnect only if needed
+        if conn is None or not conn.is_connected():
+            conn = mysql.connector.connect(
+                host="127.0.0.1",
+                user="root",
+                password="raspberry@123",
+                database="car"
+            )
 
-            # Execute SQL query to retrieve new rows since last sent
-            query = """
-                SELECT id, latitude, longitude, speed, timestamp, driver_status, acceleration
-                FROM gps_data
-                WHERE id > %s
-                ORDER BY id ASC;
-            """
-            cursor.execute(query, (last_sent_id,))
+        cursor = conn.cursor(dictionary=True)
 
-            # Fetch all rows
-            rows = cursor.fetchall()
+        # Execute SQL query to retrieve new rows since last sent
+        query = """
+            SELECT id, latitude, longitude, speed, timestamp, driver_status, acceleration
+            FROM gps_data
+            WHERE id > %s
+            ORDER BY id ASC;
+        """
+        cursor.execute(query, (last_sent_id,))
 
-            # Create an array of JSON objects (filter out invalid GPS coordinates)
-            json_data = []
-            max_id = last_sent_id
-            for row in rows:
-                lat = float(row["latitude"]) if row["latitude"] else 0.0
-                lng = float(row["longitude"]) if row["longitude"] else 0.0
-                
-                # Track the max ID we've processed
-                if row["id"] > max_id:
-                    max_id = row["id"]
-                
-                # Skip rows with invalid GPS coordinates (0,0)
-                if lat == 0.0 or lng == 0.0:
-                    continue
-                    
-                json_row = {
-                    "lat": lat,
-                    "long": lng,
-                    "speed": float(row["speed"]) if row["speed"] else 0.0,
-                    "timestamp": str(row["timestamp"]),
-                    "driver_status": row["driver_status"],
-                    "acceleration": float(row["acceleration"]) if row["acceleration"] else 0.0
-                }
-                json_data.append(json_row)
-            
-            # Update last_sent_id to avoid re-sending
-            if max_id > last_sent_id:
-                last_sent_id = max_id
-                print(f"Updated last_sent_id to {last_sent_id}")
-                
-            print(json_data)
-            # Only send if there's valid data
-            if json_data:
-                api_thread = threading.Thread(target=send_data_to_api, args=(url, bearer_token, device_id, json_data))
-                api_thread.start()
+        # Fetch all rows
+        rows = cursor.fetchall()
+        cursor.close()
 
+        # Create an array of JSON objects (filter out invalid GPS coordinates)
+        json_data = []
+        max_id = last_sent_id
+        for row in rows:
+            lat = float(row["latitude"]) if row["latitude"] else 0.0
+            lng = float(row["longitude"]) if row["longitude"] else 0.0
+
+            # Track the max ID we've processed
+            if row["id"] > max_id:
+                max_id = row["id"]
+
+            # Skip rows with invalid GPS coordinates (0,0)
+            if lat == 0.0 or lng == 0.0:
+                continue
+
+            json_row = {
+                "lat": lat,
+                "long": lng,
+                "speed": float(row["speed"]) if row["speed"] else 0.0,
+                "timestamp": str(row["timestamp"]),
+                "driver_status": row["driver_status"],
+                "acceleration": float(row["acceleration"]) if row["acceleration"] else 0.0
+            }
+            json_data.append(json_row)
+
+        # Update last_sent_id to avoid re-sending
+        if max_id > last_sent_id:
+            last_sent_id = max_id
+
+        # Only send if there's valid data
+        if json_data:
+            api_thread = threading.Thread(target=send_data_to_api, args=(url, bearer_token, device_id, json_data))
+            api_thread.start()
+
+    except mysql.connector.Error as e:
+        print(f"DB error: {str(e)}")
+        # Force reconnect on next iteration
+        try:
+            if conn:
+                conn.close()
+        except Exception:
+            pass
+        conn = None
     except Exception as e:
         print(f"An error occurred: {str(e)}")
-    finally:
-        # Close cursor and connection
-        cursor.close()
-    # Wait for 1 second before the next iteration
-    time.sleep(1)
+
+    time.sleep(POLL_INTERVAL)

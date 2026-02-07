@@ -18,6 +18,11 @@ ExecStart=/home/pi/facial-tracker-firmware/venv/bin/python \
 Restart=on-failure
 RestartSec=5
 
+# Lower priority than facial tracking (Nice=-5)
+Nice=10
+CPUWeight=25
+MemoryMax=60M
+
 StandardOutput=journal
 StandardError=journal
 

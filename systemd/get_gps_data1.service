@@ -9,9 +9,10 @@ User=pi
 Group=pi
 
 # GPS / MQTT config
-Environment=GPS_DEBUG_LOG_RAW=1
+Environment=GPS_DEBUG_LOG_RAW=0
 Environment=GPS_FORCE_GPSD=1
 Environment=MQTT_BROKER_HOST=api.copilotai.click
+Environment=MQTT_PUBLISH_INTERVAL=2.0
 
 # OTA-safe paths
 Environment=PYTHONPATH=/home/pi/facial-tracker-firmware/current/apps:/home/pi/facial-tracker-firmware/current/libs
@@ -22,6 +23,11 @@ ExecStart=/home/pi/facial-tracker-firmware/venv/bin/python \
 
 Restart=always
 RestartSec=3
+
+# Lower priority than facial tracking (Nice=-5)
+Nice=5
+CPUWeight=50
+MemoryMax=80M
 
 StandardOutput=journal
 StandardError=journal

@@ -32,7 +32,12 @@ def _get_mqtt_publisher():
     return _mqtt_publisher
 
 def _publish_gps_mqtt(lat, lng, speed, acc, driver_status="Active"):
-    """Publish GPS data via MQTT for real-time updates"""
+    """Publish GPS data via MQTT for real-time updates (throttled)"""
+    global _last_mqtt_publish
+    now = time.time()
+    if now - _last_mqtt_publish < MQTT_PUBLISH_INTERVAL:
+        return
+    _last_mqtt_publish = now
     publisher = _get_mqtt_publisher()
     if publisher:
         try:
@@ -41,6 +46,8 @@ def _publish_gps_mqtt(lat, lng, speed, acc, driver_status="Active"):
             logging.debug(f"MQTT publish failed: {e}")
 
 last_gps_write = 0.0
+_last_mqtt_publish = 0.0
+MQTT_PUBLISH_INTERVAL = float(os.getenv('MQTT_PUBLISH_INTERVAL', '2.0'))
 
 redis_client = redis.Redis(host='127.0.0.1', port=6379)
 
@@ -358,16 +365,16 @@ def read_from_gpsd():
 
                 _debug_log_sample(source='gpsd', raw_line=new_data if GPS_DEBUG_LOG_RAW else None, lat=lat2, lon=lon2, speed=speed, acc=acc)
 
-                redis_client.set('acc', acc)
+                pipe = redis_client.pipeline(transaction=False)
+                pipe.set('acc', acc)
                 if 0 <= speed < 300:
-                    redis_client.set('speed', int(speed))
-
-                redis_client.set('lat', lat2)
-                redis_client.set('long', lon2)
+                    pipe.set('speed', int(speed))
+                pipe.set('lat', lat2)
+                pipe.set('long', lon2)
+                pipe.execute()
 
                 _debug_compare_after_write(lat2, lon2, speed, acc, source='gpsd', raw_line=new_data if GPS_DEBUG_LOG_RAW else None)
 
-                # Publish to MQTT for real-time live map updates (every GPS reading)
                 _publish_gps_mqtt(lat2, lon2, speed, acc)
 
                 if time.time() - last_gps_write >= THROTTLE_SECONDS:
@@ -438,18 +445,21 @@ def read_gps_data():
                 continue
 
             # speed = calculate_speed(lat1, lon1, t1, lat2, lon2, t2)
-            redis_client.set('acc', acc)
+            pipe = redis_client.pipeline(transaction=False)
+            pipe.set('acc', acc)
             if 0 <= speed < 300:
-                redis_client.set('speed', int(speed))
+                pipe.set('speed', int(speed))
 
             if lat2 != 0 and lon2 != 0:
-                redis_client.set('lat', lat2)
-                redis_client.set('long', lon2)
+                pipe.set('lat', lat2)
+                pipe.set('long', lon2)
+                pipe.execute()
 
                 _debug_compare_after_write(lat2, lon2, speed, acc, source='serial', raw_line=data)
 
-                # Publish to MQTT for real-time live map updates (every GPS reading)
                 _publish_gps_mqtt(lat2, lon2, speed, acc)
+            else:
+                pipe.execute()
 
                 if time.time() - last_gps_write >= THROTTLE_SECONDS:
                     store_worker.submit_latest(lat2, lon2, speed)
