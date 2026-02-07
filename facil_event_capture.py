@@ -171,10 +171,15 @@ def main():
     cap = cv2.VideoCapture(conf.CAM_ID)
     cap.set(3, conf.FRAME_W)
     cap.set(4, conf.FRAME_H)
+    # Minimize camera buffer to reduce frame lag (default is 3-5 frames)
+    cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
+    # Set camera FPS to match our target to reduce unnecessary captures
+    cap.set(cv2.CAP_PROP_FPS, conf.TARGET_DETECTION_FPS)
+
     facial_tracker = FacialTracker()
 
-    # Frame timing for facial detection (15 FPS to reduce CPU usage)
-    target_detection_fps = 15
+    # Frame timing for facial detection (from conf, default 10 FPS for Pi Zero 2W)
+    target_detection_fps = conf.TARGET_DETECTION_FPS
     detection_frame_interval = 1.0 / target_detection_fps
     last_detection_time = 0
 
@@ -191,6 +196,10 @@ def main():
     last_led_stop_time = 0
     led_stop_interval = 1.0  # Only call stop_blinking once per second max
 
+    # Reuse single threads for LED control instead of spawning new ones each frame
+    _blink_thread = None
+    _blink_thread_lock = threading.Lock()
+
     # Track NoFace detection for buzzer trigger
     no_face_start_time = None
     no_face_buzzer_triggered = False
@@ -198,18 +207,42 @@ def main():
     # 15-minute interval driver verification
     last_verification_time = 0
 
-    log_info(f"Starting facial tracking with event capture (buffer FPS: {target_buffer_fps})")
+    # Redis pipeline for batched reads (1 round-trip instead of 4)
+    redis_pipe = redis_client.pipeline(transaction=False)
+
+    # GPS cache to avoid redundant Redis reads when idle
+    last_redis_read_time = 0
+    redis_read_interval = 0.5  # Read Redis at most 2x/sec when idle
+    cached_speed = '0'
+    cached_lat = '0.0'
+    cached_long = '0.0'
+    cached_acc = '0'
+
+    log_info(f"Starting facial tracking with event capture (detection FPS: {target_detection_fps}, buffer FPS: {target_buffer_fps})")
+    log_info(f"Resolution: {conf.FRAME_W}x{conf.FRAME_H}, HEADLESS: {conf.HEADLESS}, refine_landmarks: {conf.REFINE_LANDMARKS}")
     log_info(f"Driver verification interval: {VERIFICATION_INTERVAL_SECONDS // 60} minutes")
 
     try:
         while cap.isOpened():
             current_time = time.time()
 
-            # Read GPS data from Redis
-            speed = decode_or_default(redis_client.get('speed'))
-            lat = decode_or_default(redis_client.get('lat'), '0.0')
-            long2 = decode_or_default(redis_client.get('long'), '0.0')
-            acc = decode_or_default(redis_client.get('acc'), '0')
+            # Batch Redis reads using pipeline (1 round-trip instead of 4)
+            if current_time - last_redis_read_time >= redis_read_interval:
+                last_redis_read_time = current_time
+                redis_pipe.get('speed')
+                redis_pipe.get('lat')
+                redis_pipe.get('long')
+                redis_pipe.get('acc')
+                results = redis_pipe.execute()
+                cached_speed = decode_or_default(results[0])
+                cached_lat = decode_or_default(results[1], '0.0')
+                cached_long = decode_or_default(results[2], '0.0')
+                cached_acc = decode_or_default(results[3], '0')
+
+            speed = cached_speed
+            lat = cached_lat
+            long2 = cached_long
+            acc = cached_acc
 
             # Check speed threshold
             if speed is None or int(speed) < speed_config:
@@ -219,7 +252,13 @@ def main():
                 time.sleep(0.1)  # Slow down when not processing
                 continue
 
-            # Capture frame
+            # Frame timing: use grab() to discard frames cheaply when not ready to process
+            if current_time - last_detection_time < detection_frame_interval:
+                # Not time to process yet - grab (discard) frame to keep buffer fresh
+                cap.grab()
+                continue
+
+            # Capture and decode frame only when we're ready to process
             success, frame = cap.read()
             if not success:
                 log_error("Failed to capture frame")
@@ -227,12 +266,11 @@ def main():
 
             frame = cv2.flip(frame, 1)
 
-            # Process frame for facial detection at limited FPS (reduces CPU usage)
-            if current_time - last_detection_time >= detection_frame_interval:
-                last_detection_time = current_time
-                facial_tracker.process_frame(frame)
+            # Process frame for facial detection
+            last_detection_time = current_time
+            facial_tracker.process_frame(frame)
 
-                       # Determine driver status
+            # Determine driver status
             if facial_tracker.detected:
                 # Reset NoFace timer when face is detected
                 no_face_start_time = None
@@ -240,15 +278,22 @@ def main():
 
                 if facial_tracker.eyes_status == 'eye closed':
                     driver_status = 'Sleeping'
-                    threading.Thread(target=start_blinking).start()
+                    # Start blinking only if not already blinking (avoid thread storm)
+                    with _blink_thread_lock:
+                        if _blink_thread is None or not _blink_thread.is_alive():
+                            _blink_thread = threading.Thread(target=start_blinking, daemon=True)
+                            _blink_thread.start()
                 elif facial_tracker.yawn_status == 'yawning':
                     driver_status = 'Yawning'
-                    threading.Thread(target=start_blinking).start()
+                    with _blink_thread_lock:
+                        if _blink_thread is None or not _blink_thread.is_alive():
+                            _blink_thread = threading.Thread(target=start_blinking, daemon=True)
+                            _blink_thread.start()
                 else:
                     driver_status = 'Active'
-                    # Stop LED blinking for active status (throttled to reduce thread spawning)
+                    # Stop LED blinking for active status (throttled)
                     if current_time - last_led_stop_time >= led_stop_interval:
-                        threading.Thread(target=stop_blinking).start()
+                        stop_blinking()  # Direct call, no thread needed (just sets flag + GPIO off)
                         last_led_stop_time = current_time
             else:
                 driver_status = 'NoFace'
@@ -268,15 +313,15 @@ def main():
 
                     # Check if we should buzz again (new interval reached)
                     if not no_face_buzzer_triggered or no_face_duration >= (intervals_passed * NO_FACE_THRESHOLD):
-                        threading.Thread(target=buzz_for, args=(BUZZER_DURATION,)).start()
+                        buzz_for(BUZZER_DURATION)  # Now non-blocking (runs in background thread internally)
                         no_face_buzzer_triggered = True
                         log_info(f"NoFace detected for {no_face_duration:.1f}s - buzzer activated (interval {intervals_passed})")
                         # Update the threshold for next buzz
                         no_face_start_time = current_time  # Reset timer for next 2-second interval
 
-                # Throttle LED stop calls to reduce thread spawning
+                # Stop LED when no face (throttled)
                 if current_time - last_led_stop_time >= led_stop_interval:
-                    threading.Thread(target=stop_blinking).start()
+                    stop_blinking()  # Direct call
                     last_led_stop_time = current_time
 
             # Add frame to event buffer at throttled rate (5 FPS for GIF)

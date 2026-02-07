@@ -1,7 +1,21 @@
+import os
+
+# Performance mode: set HEADLESS=1 in production (no display attached)
+# Skips all drawing operations (draw_mesh, draw_iris, putText) to save CPU
+HEADLESS = os.getenv('HEADLESS', '1').strip().lower() in {'1', 'true', 'yes', 'on'}
+
 # Camera parameters
 CAM_ID  = 0
-FRAME_W = 640
-FRAME_H = 480
+FRAME_W = int(os.getenv('FRAME_W', '320'))   # 320 for Pi Zero 2W (was 640)
+FRAME_H = int(os.getenv('FRAME_H', '240'))   # 240 for Pi Zero 2W (was 480)
+
+# MediaPipe settings - disable iris refinement in production to save ~30% CPU
+REFINE_LANDMARKS = os.getenv('REFINE_LANDMARKS', '0').strip().lower() in {'1', 'true', 'yes', 'on'}
+MIN_DETECTION_CONFIDENCE = float(os.getenv('MIN_DETECTION_CONFIDENCE', '0.5'))
+MIN_TRACKING_CONFIDENCE = float(os.getenv('MIN_TRACKING_CONFIDENCE', '0.5'))
+
+# Target FPS for detection loop (lower = less CPU)
+TARGET_DETECTION_FPS = int(os.getenv('TARGET_DETECTION_FPS', '10'))
 
 # Plot configuration
 TEXT_COLOR = (102,51,0)
@@ -9,17 +23,7 @@ LM_COLOR   = (51,255,51)
 CT_COLOR   = (243,166,56)
 WARN_COLOR = (76,76,255)
 
-# COLOR1 = (243,236,27)
-# COLOR2 = (51,255,51)
-# COLOR3 = (255,255,255)
-# COLOR4 = (255,51,255)
-# COLOR5 = (102,51,0)
-# COLOR6 = (121,49,255)
-# COLOR7 = (76,166,255)
-# COLOR8 = (243,166,56)
-# COLOR9 = (107,29,92)
-
-# Target lamdmarks
+# Target landmarks
 LEFT_EYE   = [263, 362, 386, 374, 473, 474, 475, 476, 477]
 RIGHT_EYE  = [133,  33, 159, 145, 468, 469, 470, 471, 472]
 LIPS       = [291,  61,  13,  14]

@@ -20,8 +20,9 @@ class FaceMesh:
             invoked automatically on the next input image. 
     """
 
-    def __init__(self, max_num_faces=1, refine_landmarks=True,
-                 min_detection_confidence=0.5, min_tracking_confidence=0.5):
+    def __init__(self, max_num_faces=1, refine_landmarks=conf.REFINE_LANDMARKS,
+                 min_detection_confidence=conf.MIN_DETECTION_CONFIDENCE,
+                 min_tracking_confidence=conf.MIN_TRACKING_CONFIDENCE):
 
         self.max_num_faces = max_num_faces
         self.refine_landmarks = refine_landmarks
@@ -62,7 +63,9 @@ class FaceMesh:
         self.mesh_result = self.face_mesh.process(frame)
     
     def draw_mesh(self):
-        """Draw the mesh result by mediapipe face_mesh processor."""
+        """Draw the mesh result by mediapipe face_mesh processor. Skipped in HEADLESS mode."""
+        if conf.HEADLESS:
+            return
 
         # Possible self.mp_face_mesh.FACEMESH_<TYPES>:
         #     CONTOURS
@@ -109,7 +112,9 @@ class FaceMesh:
                     .get_default_face_mesh_iris_connections_style())
     
     def draw_mesh_eyes(self):
-        """Draw the mesh of eyes."""
+        """Draw the mesh of eyes. Skipped in HEADLESS mode."""
+        if conf.HEADLESS:
+            return
         if self.mesh_result.multi_face_landmarks:
             for face_landmarks in self.mesh_result.multi_face_landmarks:
                 self.mp_drawing.draw_landmarks(
@@ -128,7 +133,9 @@ class FaceMesh:
                         color=conf.CT_COLOR, thickness=1, circle_radius=1))
     
     def draw_mesh_lips(self):
-        """Draw the mesh of lips."""
+        """Draw the mesh of lips. Skipped in HEADLESS mode."""
+        if conf.HEADLESS:
+            return
         if self.mesh_result.multi_face_landmarks:
             for face_landmarks in self.mesh_result.multi_face_landmarks:
                 self.mp_drawing.draw_landmarks(
