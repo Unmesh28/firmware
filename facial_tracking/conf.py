@@ -6,8 +6,8 @@ HEADLESS = os.getenv('HEADLESS', '1').strip().lower() in {'1', 'true', 'yes', 'o
 
 # Camera parameters
 CAM_ID  = 0
-FRAME_W = int(os.getenv('FRAME_W', '320'))   # 320 for Pi Zero 2W (was 640)
-FRAME_H = int(os.getenv('FRAME_H', '240'))   # 240 for Pi Zero 2W (was 480)
+FRAME_W = int(os.getenv('FRAME_W', '640'))
+FRAME_H = int(os.getenv('FRAME_H', '480'))
 
 # MediaPipe settings - disable iris refinement in production to save ~30% CPU
 REFINE_LANDMARKS = os.getenv('REFINE_LANDMARKS', '0').strip().lower() in {'1', 'true', 'yes', 'on'}
