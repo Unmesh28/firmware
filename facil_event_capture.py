@@ -9,6 +9,7 @@ import cv2
 import os
 import sys
 import time
+import gc
 import fcntl
 from datetime import datetime
 import threading
@@ -217,6 +218,11 @@ def send_status_and_stop_led(lat, long2, speed, status, acc):
     ).start()
 
 def main():
+    # Disable automatic garbage collection — run manually every N frames
+    # Prevents GC pauses (10-50ms) during real-time inference
+    gc.disable()
+    gc_interval = 100  # Run GC every 100 frames
+
     # Threaded camera: I/O runs in background thread, main loop never blocks on read
     cap = ThreadedCamera(src=conf.CAM_ID, width=conf.FRAME_W, height=conf.FRAME_H)
     cap.start()
@@ -228,8 +234,8 @@ def main():
     detection_frame_interval = 1.0 / target_detection_fps
     last_detection_time = 0
 
-    # Frame timing for event buffer (5 FPS for GIF)
-    target_buffer_fps = 5
+    # Frame timing for event buffer (2 FPS — less JPEG encoding overhead, still enough for pre-event)
+    target_buffer_fps = 2
     buffer_frame_interval = 1.0 / target_buffer_fps
     last_buffer_frame_time = 0
 
@@ -328,6 +334,10 @@ def main():
                 log_info(f"Performance: avg {avg_ms:.0f}ms/frame, max possible FPS: {actual_fps:.1f}, detected: {facial_tracker.detected}")
                 main._total_process_time = 0
 
+            # Manual GC at controlled intervals (avoids random GC pauses during inference)
+            if main._frame_count % gc_interval == 0:
+                gc.collect()
+
             # Determine driver status
             if facial_tracker.detected:
                 # Reset NoFace timer when face is detected
@@ -382,12 +392,13 @@ def main():
                     stop_blinking()  # Direct call
                     last_led_stop_time = current_time
 
-            # Add frame to event buffer at throttled rate (5 FPS for GIF)
-            # This doesn't affect buzzer - that already triggered in process_frame()
+            # Add frame to event buffer at throttled rate (2 FPS)
+            # Downscale to 320x240 before adding — reduces JPEG encoding time by ~4x
             if current_time - last_buffer_frame_time >= buffer_frame_interval:
                 last_buffer_frame_time = current_time
+                small_frame = cv2.resize(frame, (320, 240), interpolation=cv2.INTER_NEAREST)
                 event_buffer.add_frame(
-                    frame=frame,
+                    frame=small_frame,
                     speed=speed,
                     lat=lat,
                     long=long2,

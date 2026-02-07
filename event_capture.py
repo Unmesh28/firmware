@@ -73,12 +73,12 @@ class EventFrameBuffer:
     """
     
     # Configuration - optimized for Pi Zero 2W (512MB RAM)
-    FPS = 5  # Expected frames per second
+    FPS = 2  # Buffer capture rate (matched to main loop's buffer_frame_interval)
     PRE_EVENT_SECONDS = 2.0  # Reduced from 2.5s
     POST_EVENT_SECONDS = 1.0
-    MAX_EVENT_SECONDS = 10.0  # Force complete after 10 seconds (50 frames max)
-    BUFFER_SIZE = int(FPS * 1)  # 1 second buffer (5 frames) - minimal for Pi Zero 2W
-    JPEG_QUALITY = 50  # Lower quality for smaller files (50 instead of 60)
+    MAX_EVENT_SECONDS = 10.0  # Force complete after 10 seconds
+    BUFFER_SIZE = int(FPS * 2)  # 2 seconds buffer (4 frames at 2 FPS)
+    JPEG_QUALITY = 40  # Lower quality for smaller files and faster encoding
     
     # NoFace: save only 1 frame per minute (not as full event)
     NOFACE_INTERVAL_SECONDS = 60

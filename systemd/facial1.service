@@ -46,6 +46,10 @@ RestartSec=5
 # Set process scheduling priority (lower nice = higher priority)
 Nice=-5
 
+# Highest I/O priority — swap page-ins happen faster than other services
+IOSchedulingClass=realtime
+IOSchedulingPriority=0
+
 # Limit memory to prevent OOM killing other services
 MemoryMax=350M
 
