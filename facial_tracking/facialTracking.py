@@ -51,14 +51,14 @@ class FacialTracker:
             self.left_eye_closed_frames += 1
         else:
             self.left_eye_closed_frames = 0
-            if not conf.HEADLESS:
+            if not conf.HEADLESS and self.left_eye.iris:
                 self.left_eye.iris.draw_iris(True)
 
         if self.right_eye.eye_closed():
             self.right_eye_closed_frames += 1
         else:
             self.right_eye_closed_frames = 0
-            if not conf.HEADLESS:
+            if not conf.HEADLESS and self.right_eye.iris:
                 self.right_eye.iris.draw_iris(True)
         
         if self._left_eye_closed() and self._right_eye_closed():
