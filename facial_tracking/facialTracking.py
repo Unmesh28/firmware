@@ -31,7 +31,7 @@ class FacialTracker:
         """Process the frame to analyze facial status."""
         self.detected = False  # Reset detected status for each frame
         self.fm.process_frame(frame)
-        self.fm.draw_mesh_lips()
+        self.fm.draw_mesh_lips()  # no-op in HEADLESS mode
 
         if self.fm.mesh_result.multi_face_landmarks:
             self.detected = True
@@ -41,6 +41,7 @@ class FacialTracker:
                 self.lips = Lips(frame, face_landmarks, conf.LIPS)
                 self._check_eyes_status()
                 self._check_yawn_status()
+                break  # Only process the first face (skip multi-face loop overhead)
     
     def _check_eyes_status(self):
         self.eyes_status = ''
@@ -50,13 +51,15 @@ class FacialTracker:
             self.left_eye_closed_frames += 1
         else:
             self.left_eye_closed_frames = 0
-            self.left_eye.iris.draw_iris(True)
+            if not conf.HEADLESS:
+                self.left_eye.iris.draw_iris(True)
 
         if self.right_eye.eye_closed():
             self.right_eye_closed_frames += 1
         else:
             self.right_eye_closed_frames = 0
-            self.right_eye.iris.draw_iris(True)
+            if not conf.HEADLESS:
+                self.right_eye.iris.draw_iris(True)
         
         if self._left_eye_closed() and self._right_eye_closed():
             self.eyes_status = 'eye closed'
