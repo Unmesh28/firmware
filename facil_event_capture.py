@@ -198,15 +198,23 @@ def map_driver_status(status):
 def decode_or_default(value, default='0'):
     return value.decode() if value else default
 
+_last_idle_send_time = 0
+
 def send_status_and_stop_led(lat, long2, speed, status, acc):
-    threadStopBlinkLed_1 = threading.Thread(target=stop_blinking)
-    threadStopBlinkLed_1.start()
+    global _last_idle_send_time
+    now = time.time()
+    # Throttle: only send GPS + stop LED once per 2 seconds when idle
+    if now - _last_idle_send_time < 2.0:
+        return
+    _last_idle_send_time = now
+
+    stop_blinking()  # Direct call, no thread needed (just sets flag + GPIO off)
     api_status = map_driver_status(status)
-    threadSendDataToApi = threading.Thread(
+    threading.Thread(
         target=add_gps_data,
-        args=(lat, long2, speed, str(datetime.now()), api_status, acc)
-    )
-    threadSendDataToApi.start()
+        args=(lat, long2, speed, str(datetime.now()), api_status, acc),
+        daemon=True
+    ).start()
 
 def main():
     # Threaded camera: I/O runs in background thread, main loop never blocks on read
@@ -304,7 +312,21 @@ def main():
 
             # Process frame for facial detection
             last_detection_time = current_time
+            t_start = time.time()
             facial_tracker.process_frame(frame)
+            t_process = time.time() - t_start
+
+            # Log processing time every 30 frames to track actual FPS
+            if not hasattr(main, '_frame_count'):
+                main._frame_count = 0
+                main._total_process_time = 0
+            main._frame_count += 1
+            main._total_process_time += t_process
+            if main._frame_count % 30 == 0:
+                avg_ms = (main._total_process_time / 30) * 1000
+                actual_fps = 30 / main._total_process_time if main._total_process_time > 0 else 0
+                log_info(f"Performance: avg {avg_ms:.0f}ms/frame, max possible FPS: {actual_fps:.1f}, detected: {facial_tracker.detected}")
+                main._total_process_time = 0
 
             # Determine driver status
             if facial_tracker.detected:
