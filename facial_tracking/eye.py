@@ -22,10 +22,16 @@ class Eye:
         self.face_landmarks = face_landmarks
         self.id = id
 
-        self.iris = Iris(frame, face_landmarks, id)
         self.pos  = self._get_eye_pos()
-        self.iris_relative_to_eye = self._get_gaze_ratio()
         self.eye_veti_to_hori = self._get_blink_ratio()
+
+        # Iris landmarks (468-477) only exist when refine_landmarks=True
+        if conf.REFINE_LANDMARKS:
+            self.iris = Iris(frame, face_landmarks, id)
+            self.iris_relative_to_eye = self._get_gaze_ratio()
+        else:
+            self.iris = None
+            self.iris_relative_to_eye = [0.5, 0.5, 0.5]  # Default: center gaze
     
     def _get_eye_pos(self):
         """Get the left, right, top, and bottom positions of eye."""
