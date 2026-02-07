@@ -281,22 +281,27 @@ class EventFrameBuffer:
         self.last_critical_status = None
     
     def _save_event_frames(self, event: EventData):
-        """Save event frames to disk and trigger upload"""
+        """Save event frames to disk (lightweight: write raw JPEG bytes, skip annotation to save CPU)"""
         try:
+            # Lower thread priority to avoid stealing CPU from MediaPipe inference
+            try:
+                os.nice(10)
+            except OSError:
+                pass
+
             frame_paths = []
-            
+
             for i, frame_data in enumerate(event.frames):
                 filename = f"frame_{i:04d}.jpg"
                 filepath = os.path.join(event.folder_path, filename)
-                
-                # Add overlay to frame
-                annotated_frame = self._annotate_frame(frame_data)
-                
-                # Save frame
-                cv2.imwrite(filepath, annotated_frame, [cv2.IMWRITE_JPEG_QUALITY, 85])
+
+                # Write raw JPEG bytes directly — no decode/annotate/re-encode cycle
+                # Saves ~5-10ms CPU per frame on Pi Zero 2W (vs decode+draw+encode)
+                with open(filepath, 'wb') as f:
+                    f.write(frame_data.frame_bytes)
                 frame_paths.append(filepath)
-            
-            # Save event metadata
+
+            # Save event metadata (contains all info that was previously annotated on frames)
             metadata_path = os.path.join(event.folder_path, "event_meta.txt")
             with open(metadata_path, 'w') as f:
                 f.write(f"event_id={event.event_id}\n")
@@ -308,16 +313,16 @@ class EventFrameBuffer:
                     f.write(f"lat={event.frames[0].lat}\n")
                     f.write(f"long={event.frames[0].long}\n")
                     f.write(f"speed={event.frames[0].speed}\n")
-            
+
             log_info(f"Event {event.event_id} saved: {len(frame_paths)} frames")
-            
+
             # Clear frames from memory after saving to free RAM
             event.frames.clear()
-            
+
             # Trigger upload callback
             if self.upload_callback:
                 self.upload_callback(event)
-                
+
         except Exception as e:
             log_error(f"Error saving event {event.event_id}: {str(e)}")
     
