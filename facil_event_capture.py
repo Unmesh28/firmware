@@ -127,7 +127,7 @@ def capture_and_send_verification_image(frame, lat, long2, speed, acc):
             timeout=30
         )
 
-        if response.status_code == 201:
+        if response.status_code in (200, 201):
             result = response.json()
             log_info(f"Driver verification sent successfully: {result.get('message', 'OK')}")
             return True
