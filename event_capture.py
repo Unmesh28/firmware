@@ -496,10 +496,12 @@ def init_event_capture(base_events_path: str, device_id: str, auth_token: str):
     """
     global _event_buffer, _event_uploader
     
+    # upload_images.py service handles uploads via /api/events/upload
+    # Don't pass upload_callback here to avoid double-uploading events
     _event_uploader = EventUploader(device_id, auth_token)
     _event_buffer = EventFrameBuffer(
         base_events_path=base_events_path,
-        upload_callback=_event_uploader.upload_event
+        upload_callback=None
     )
     
     log_info("Event capture system initialized")

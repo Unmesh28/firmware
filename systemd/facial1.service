@@ -26,6 +26,9 @@ Environment=MIN_TRACKING_CONFIDENCE=0.5
 # Optimize Python for production (disable assertions, optimize bytecode)
 Environment="PYTHONOPTIMIZE=2"
 
+# Prevent matplotlib (mediapipe dependency) from heavy GUI backend init
+Environment="MPLBACKEND=Agg"
+
 # Limit OpenCV threads to avoid contention on 4-core ARM
 Environment="OPENBLAS_NUM_THREADS=2"
 Environment="OMP_NUM_THREADS=2"

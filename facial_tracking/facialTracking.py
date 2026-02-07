@@ -5,10 +5,6 @@ import facial_tracking.conf as conf
 from facial_tracking.faceMesh import FaceMesh
 from facial_tracking.eye import Eye
 from facial_tracking.lips import Lips
-from pygame import mixer
-import time
-from gpiozero import Buzzer
-from time import sleep
 from buzzer_controller import buzz_once
 
 class FacialTracker:
