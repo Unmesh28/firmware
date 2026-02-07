@@ -22,7 +22,7 @@ echo "============================================="
 # 1. INCREASE SWAP SIZE (100MB -> 1024MB)
 # -----------------------------------------------
 echo ""
-echo "[1/8] Configuring swap (1024MB)..."
+echo "[1/7] Configuring swap (1024MB)..."
 
 if [ -f /etc/dphys-swapfile ]; then
     sed -i 's/^CONF_SWAPSIZE=.*/CONF_SWAPSIZE=1024/' /etc/dphys-swapfile
@@ -45,7 +45,7 @@ fi
 # 2. SETUP ZRAM (compressed RAM swap)
 # -----------------------------------------------
 echo ""
-echo "[2/8] Setting up zram (compressed RAM swap)..."
+echo "[2/7] Setting up zram (compressed RAM swap)..."
 
 cat > /etc/systemd/system/zram-swap.service << 'ZRAMEOF'
 [Unit]
@@ -76,7 +76,7 @@ echo "   Compressed RAM swap is 10-50x faster than SD card swap"
 # 3. OVERCLOCK CPU (1GHz -> 1.2GHz, safe)
 # -----------------------------------------------
 echo ""
-echo "[3/8] Configuring overclock (1.2GHz, safe)..."
+echo "[3/7] Configuring overclock (1.2GHz, safe)..."
 
 CONFIG_FILE="/boot/config.txt"
 if [ -f /boot/firmware/config.txt ]; then
@@ -123,7 +123,7 @@ echo "   Audio: disabled (not used)"
 # 4. CPU GOVERNOR -> performance (fixed max frequency)
 # -----------------------------------------------
 echo ""
-echo "[4/8] Setting CPU governor to 'performance'..."
+echo "[4/7] Setting CPU governor to 'performance'..."
 
 cat > /etc/systemd/system/cpu-performance.service << 'CPUEOF'
 [Unit]
@@ -148,7 +148,7 @@ echo "   Eliminates frame time jitter from CPU speed changes"
 # 5. KERNEL / SYSCTL TUNING
 # -----------------------------------------------
 echo ""
-echo "[5/8] Tuning kernel parameters..."
+echo "[5/7] Tuning kernel parameters..."
 
 cat > /etc/sysctl.d/99-sapience-performance.conf << 'SYSEOF'
 # Reduce swappiness (prefer keeping app data in RAM over file cache)
@@ -176,7 +176,7 @@ echo "   Dirty page writeback optimized for SD card"
 # 6. DISABLE UNNECESSARY SERVICES
 # -----------------------------------------------
 echo ""
-echo "[6/8] Disabling unnecessary services..."
+echo "[6/7] Disabling unnecessary services..."
 
 SERVICES_TO_DISABLE=(
     "bluetooth.service"
@@ -184,7 +184,6 @@ SERVICES_TO_DISABLE=(
     "triggerhappy.service"
     "avahi-daemon.service"
     "ModemManager.service"
-    "wpa_supplicant@.service"
     "apt-daily.service"
     "apt-daily-upgrade.service"
     "apt-daily.timer"
@@ -215,7 +214,7 @@ echo "   Bluetooth, HDMI, apt timers, avahi disabled"
 # 7. TMPFS FOR TEMPORARY FILES
 # -----------------------------------------------
 echo ""
-echo "[7/8] Setting up tmpfs (RAM-based temp storage)..."
+echo "[7/7] Setting up tmpfs (RAM-based temp storage)..."
 
 # Add tmpfs mounts if not already present
 if ! grep -q '/tmp tmpfs' /etc/fstab; then
@@ -229,36 +228,6 @@ fi
 
 echo "   Temp files and logs now use RAM (no SD card I/O)"
 echo "   WARNING: Logs will be lost on reboot. Use journalctl for persistent logs."
-
-# -----------------------------------------------
-# 8. WIFI POWER MANAGEMENT OFF
-# -----------------------------------------------
-echo ""
-echo "[8/8] Disabling WiFi power management..."
-
-cat > /etc/NetworkManager/conf.d/no-wifi-powersave.conf 2>/dev/null << 'WIFIEOF' || true
-[connection]
-wifi.powersave = 2
-WIFIEOF
-
-# Also via systemd
-cat > /etc/systemd/system/wifi-powersave-off.service << 'WPEOF'
-[Unit]
-Description=Disable WiFi Power Save
-After=network-online.target
-
-[Service]
-Type=oneshot
-RemainAfterExit=yes
-ExecStart=/sbin/iw dev wlan0 set power_save off
-
-[Install]
-WantedBy=multi-user.target
-WPEOF
-
-systemctl daemon-reload
-systemctl enable wifi-powersave-off.service
-echo "   WiFi power management disabled (prevents latency spikes)"
 
 # -----------------------------------------------
 # SUMMARY
@@ -286,7 +255,6 @@ echo ""
 echo " DISABLED:"
 echo "   - Bluetooth, HDMI, audio hardware"
 echo "   - apt auto-updates, avahi, triggerhappy"
-echo "   - WiFi power management"
 echo ""
 echo " *** REBOOT REQUIRED to apply all changes ***"
 echo "   Run: sudo reboot"
