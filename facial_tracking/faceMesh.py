@@ -60,6 +60,8 @@ class FaceMesh:
     def _face_mesh(self):
         """Call the mediapipe face_mesh processor."""
         frame = cv2.cvtColor(self.frame, cv2.COLOR_BGR2RGB)
+        # Mark as not writeable so MediaPipe passes by reference (avoids internal copy)
+        frame.flags.writeable = False
         self.mesh_result = self.face_mesh.process(frame)
     
     def draw_mesh(self):

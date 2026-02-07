@@ -14,7 +14,7 @@ buzzer2 = Buzzer(13)
 
 # Cooldown tracking to prevent rapid buzzing
 _last_buzz_time = 0
-BUZZ_COOLDOWN_SECONDS = 0  # Minimum time between buzzes
+BUZZ_COOLDOWN_SECONDS = 0.5  # Minimum time between buzzes (max 2 buzzes/sec)
 _buzz_lock = threading.Lock()
 _buzz_active = False  # Prevent overlapping buzz threads
 

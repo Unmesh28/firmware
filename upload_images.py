@@ -20,7 +20,7 @@ EVENT_UPLOAD_URL = "https://api.copilotai.click/api/events/upload"
 # Directories
 PENDING_DIR = "/home/pi/facial-tracker-firmware/images/pending"
 EVENTS_DIR = "/home/pi/facial-tracker-firmware/images/events"
-POLL_INTERVAL = 1  # seconds
+POLL_INTERVAL = 30  # seconds (batch uploads to reduce CPU contention with facial detection)
 
 DEVICE_ID = get_device_id_from_db()
 

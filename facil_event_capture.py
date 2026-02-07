@@ -27,6 +27,47 @@ from blnk_led import stop_blinking, start_blinking
 from buzzer_controller import buzz_for
 from event_capture import init_event_capture, get_event_buffer, shutdown_event_capture
 
+
+class ThreadedCamera:
+    """
+    Threaded camera capture to separate I/O from processing.
+    Camera reads happen in a background thread so the main loop
+    always has a fresh frame ready without blocking on I/O.
+    Reference: https://pyimagesearch.com/2015/12/28/increasing-raspberry-pi-fps-with-python-and-opencv/
+    """
+
+    def __init__(self, src=0, width=640, height=480):
+        self.cap = cv2.VideoCapture(src)
+        self.cap.set(cv2.CAP_PROP_FRAME_WIDTH, width)
+        self.cap.set(cv2.CAP_PROP_FRAME_HEIGHT, height)
+        self.cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
+
+        self.grabbed, self.frame = self.cap.read()
+        self.stopped = False
+        self.lock = threading.Lock()
+
+    def start(self):
+        threading.Thread(target=self._update, daemon=True).start()
+        return self
+
+    def _update(self):
+        while not self.stopped:
+            grabbed, frame = self.cap.read()
+            with self.lock:
+                self.grabbed = grabbed
+                self.frame = frame
+
+    def read(self):
+        with self.lock:
+            return self.grabbed, self.frame
+
+    def isOpened(self):
+        return self.cap.isOpened()
+
+    def release(self):
+        self.stopped = True
+        self.cap.release()
+
 # Default bundle version
 bundle_version = "1.0.0"
 
@@ -168,13 +209,9 @@ def send_status_and_stop_led(lat, long2, speed, status, acc):
     threadSendDataToApi.start()
 
 def main():
-    cap = cv2.VideoCapture(conf.CAM_ID)
-    cap.set(3, conf.FRAME_W)
-    cap.set(4, conf.FRAME_H)
-    # Minimize camera buffer to reduce frame lag (default is 3-5 frames)
-    cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
-    # Set camera FPS to match our target to reduce unnecessary captures
-    cap.set(cv2.CAP_PROP_FPS, conf.TARGET_DETECTION_FPS)
+    # Threaded camera: I/O runs in background thread, main loop never blocks on read
+    cap = ThreadedCamera(src=conf.CAM_ID, width=conf.FRAME_W, height=conf.FRAME_H)
+    cap.start()
 
     facial_tracker = FacialTracker()
 
@@ -252,16 +289,15 @@ def main():
                 time.sleep(0.1)  # Slow down when not processing
                 continue
 
-            # Frame timing: use grab() to discard frames cheaply when not ready to process
+            # Frame timing: throttle detection to target FPS
             if current_time - last_detection_time < detection_frame_interval:
-                # Not time to process yet - grab (discard) frame to keep buffer fresh
-                cap.grab()
+                time.sleep(0.001)  # Yield CPU briefly
                 continue
 
-            # Capture and decode frame only when we're ready to process
+            # Read latest frame from threaded camera (non-blocking, always fresh)
             success, frame = cap.read()
-            if not success:
-                log_error("Failed to capture frame")
+            if not success or frame is None:
+                time.sleep(0.01)
                 continue
 
             frame = cv2.flip(frame, 1)
