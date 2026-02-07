@@ -1,0 +1,27 @@
+[Unit]
+Description=Driver Sleeping Alarm
+After=network-online.target ota-startup.service
+Wants=network-online.target
+Requires=ota-startup.service
+
+[Service]
+Type=simple
+User=pi
+Group=pi
+
+WorkingDirectory=/home/pi/facial-tracker-firmware/current/apps
+
+Environment=PYTHONUNBUFFERED=1
+Environment="PYTHONPATH=/home/pi/facial-tracker-firmware/current/apps:/home/pi/facial-tracker-firmware/current/libs"
+
+ExecStart=/home/pi/facial-tracker-firmware/venv/bin/python \
+          /home/pi/facial-tracker-firmware/current/apps/facil_event_capture.py
+
+Restart=always
+RestartSec=5
+
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target

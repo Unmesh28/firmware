@@ -1,0 +1,22 @@
+[Unit]
+Description=Device Provisioning Web UI
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=pi
+Group=pi
+EnvironmentFile=/home/pi/facial-tracker-firmware/.env
+WorkingDirectory=/home/pi/facial-tracker-firmware/current/apps
+
+ExecStart=/home/pi/facial-tracker-firmware/venv/bin/python \
+          /home/pi/facial-tracker-firmware/current/apps/provisioning_ui.py
+
+Restart=on-failure
+RestartSec=5
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target

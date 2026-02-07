@@ -1,0 +1,14 @@
+opencv-python
+mediapipe
+pygame
+gpiozero
+firebase_admin
+pyserial
+pynmea2
+geopy
+redis
+mysql-connector-python
+protobuf==3.20.*
+paho-mqtt
+msgpack
+flask

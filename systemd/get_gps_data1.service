@@ -1,0 +1,30 @@
+[Unit]
+Description=Get GPS Location
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=pi
+Group=pi
+
+# GPS / MQTT config
+Environment=GPS_DEBUG_LOG_RAW=1
+Environment=GPS_FORCE_GPSD=1
+Environment=MQTT_BROKER_HOST=api.copilotai.click
+
+# OTA-safe paths
+Environment=PYTHONPATH=/home/pi/facial-tracker-firmware/current/apps:/home/pi/facial-tracker-firmware/current/libs
+WorkingDirectory=/home/pi/facial-tracker-firmware/current/apps
+
+ExecStart=/home/pi/facial-tracker-firmware/venv/bin/python \
+          /home/pi/facial-tracker-firmware/current/apps/get_gps_data.py
+
+Restart=always
+RestartSec=3
+
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target

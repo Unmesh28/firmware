@@ -1,0 +1,30 @@
+[Unit]
+Description=OTA Auto-Update Daemon - Versioned bundle update system
+After=network-online.target mariadb.service ota-startup.service
+Wants=network-online.target
+Requires=ota-startup.service
+
+[Service]
+Type=simple
+User=pi
+Group=pi
+
+WorkingDirectory=/home/pi/facial-tracker-firmware
+
+# OTA daemon: avoid .env dependency
+Environment=PYTHONUNBUFFERED=1
+
+ExecStart=/home/pi/facial-tracker-firmware/venv/bin/python \
+          /home/pi/facial-tracker-firmware/ota/ota_updater.py daemon
+
+Restart=on-failure
+RestartSec=60
+
+StandardOutput=journal
+StandardError=journal
+
+# Watchdog only if code supports sd_notify
+# WatchdogSec=300
+
+[Install]
+WantedBy=multi-user.target
