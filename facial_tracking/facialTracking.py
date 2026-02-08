@@ -19,16 +19,7 @@ class FacialTracker:
         self.lips = None
         self.left_eye_closed_frames = 0
         self.right_eye_closed_frames = 0
-        self.yawn_frames = 0
-        self.yawn_gap_frames = 0
         self.detected = False  # Initialize the detected attribute
-
-        # Hysteresis: allow small gaps in detection without resetting counters
-        # At 320x240 downscale, landmarks are noisier — single frame misdetections
-        # would reset counters and prevent threshold from ever being reached
-        self.left_eye_gap_frames = 0
-        self.right_eye_gap_frames = 0
-        self._EYE_GAP_TOLERANCE = 3  # Allow up to 3 missed frames before resetting
 
         # Track previous status to only buzz on state transition (not every frame)
         self._prev_eyes_status = ''
@@ -54,21 +45,15 @@ class FacialTracker:
         self.eyes_status = ''
         if self.left_eye.eye_closed():
             self.left_eye_closed_frames += 1
-            self.left_eye_gap_frames = 0
         else:
-            self.left_eye_gap_frames += 1
-            if self.left_eye_gap_frames > self._EYE_GAP_TOLERANCE:
-                self.left_eye_closed_frames = 0
+            self.left_eye_closed_frames = 0
             if not conf.HEADLESS and self.left_eye.iris:
                 self.left_eye.iris.draw_iris(True)
 
         if self.right_eye.eye_closed():
             self.right_eye_closed_frames += 1
-            self.right_eye_gap_frames = 0
         else:
-            self.right_eye_gap_frames += 1
-            if self.right_eye_gap_frames > self._EYE_GAP_TOLERANCE:
-                self.right_eye_closed_frames = 0
+            self.right_eye_closed_frames = 0
             if not conf.HEADLESS and self.right_eye.iris:
                 self.right_eye.iris.draw_iris(True)
 
@@ -97,14 +82,6 @@ class FacialTracker:
         self.yawn_status = ''
 
         if self.lips.mouth_open():
-            self.yawn_frames += 1
-            self.yawn_gap_frames = 0
-        else:
-            self.yawn_gap_frames += 1
-            if self.yawn_gap_frames > conf.FRAME_TOLERANCE:
-                self.yawn_frames = 0
-
-        if self.yawn_frames > conf.FRAME_YAWN:
             self.yawn_status = 'yawning'
             # Start continuous buzzer on state transition (not every frame)
             if self._prev_yawn_status != 'yawning':
