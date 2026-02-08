@@ -12,6 +12,7 @@ import time
 import gc
 import fcntl
 from datetime import datetime
+from queue import Queue
 import threading
 import redis
 import RPi.GPIO as GPIO
@@ -245,6 +246,54 @@ def decode_or_default(value, default='0'):
 
 _last_idle_send_time = 0
 
+# Single background worker for GPS sends — prevents unbounded thread spawning
+_gps_queue = None
+_save_image_queue = None
+
+def _gps_worker():
+    """Persistent worker for GPS data sends. One at a time, never piles up."""
+    while True:
+        try:
+            args = _gps_queue.get()
+            add_gps_data(*args)
+        except Exception:
+            pass
+
+def _save_image_worker():
+    """Persistent worker for save_image. Serializes SD card writes."""
+    try:
+        os.nice(5)  # Lower priority than detection
+    except OSError:
+        pass
+    while True:
+        try:
+            args = _save_image_queue.get()
+            save_image(*args)
+        except Exception:
+            pass
+
+def _init_workers():
+    """Start persistent background worker threads."""
+    global _gps_queue, _save_image_queue
+    _gps_queue = Queue(maxsize=2)
+    _save_image_queue = Queue(maxsize=2)
+    threading.Thread(target=_gps_worker, daemon=True).start()
+    threading.Thread(target=_save_image_worker, daemon=True).start()
+
+def _enqueue_gps(lat, long2, speed, timestamp, status, acc):
+    """Queue GPS data for background send. Drops if queue full (backpressure)."""
+    try:
+        _gps_queue.put_nowait((lat, long2, speed, timestamp, status, acc))
+    except Exception:
+        pass  # Drop if worker is busy — next one will update
+
+def _enqueue_save_image(frame, folder_path, speed, lat, long2, driver_status):
+    """Queue image for background save. Drops if queue full."""
+    try:
+        _save_image_queue.put_nowait((frame, folder_path, speed, lat, long2, driver_status))
+    except Exception:
+        pass  # Drop if worker is busy
+
 def send_status_and_stop_led(lat, long2, speed, status, acc):
     global _last_idle_send_time
     now = time.time()
@@ -256,13 +305,12 @@ def send_status_and_stop_led(lat, long2, speed, status, acc):
     stop_blinking()  # Direct call, no thread needed (just sets flag + GPIO off)
     stop_continuous_buzz()  # Stop buzzer when vehicle idle/stopped
     api_status = map_driver_status(status)
-    threading.Thread(
-        target=add_gps_data,
-        args=(lat, long2, speed, str(datetime.now()), api_status, acc),
-        daemon=True
-    ).start()
+    _enqueue_gps(lat, long2, speed, str(datetime.now()), api_status, acc)
 
 def main():
+    # Start persistent background workers (GPS + save_image)
+    _init_workers()
+
     # Disable automatic garbage collection — run manually every N frames
     # Prevents GC pauses (10-50ms) during real-time inference
     gc.disable()
@@ -279,7 +327,7 @@ def main():
     detection_frame_interval = 1.0 / target_detection_fps
     last_detection_time = 0
 
-    # Frame timing for event buffer (2 FPS — less JPEG encoding overhead, still enough for pre-event)
+    # Frame timing for event buffer (2 FPS — raw numpy copy only, JPEG encoding in save worker)
     target_buffer_fps = 2
     buffer_frame_interval = 1.0 / target_buffer_fps
     last_buffer_frame_time = 0
@@ -410,12 +458,10 @@ def main():
                         if _blink_thread is None or not _blink_thread.is_alive():
                             _blink_thread = threading.Thread(target=start_blinking, daemon=True)
                             _blink_thread.start()
-                    # Save annotated image (throttled 1/sec, background thread)
+                    # Save annotated image (throttled 1/sec, queued to worker)
                     if current_time - last_save_time >= SAVE_IMAGE_INTERVAL:
                         last_save_time = current_time
-                        threading.Thread(target=save_image,
-                            args=(frame.copy(), folder_path, speed, lat, long2, driver_status),
-                            daemon=True).start()
+                        _enqueue_save_image(frame.copy(), folder_path, speed, lat, long2, driver_status)
 
                 elif facial_tracker.yawn_status == 'yawning':
                     driver_status = 'Yawning'
@@ -427,9 +473,7 @@ def main():
                             _blink_thread.start()
                     if current_time - last_save_time >= SAVE_IMAGE_INTERVAL:
                         last_save_time = current_time
-                        threading.Thread(target=save_image,
-                            args=(frame.copy(), folder_path, speed, lat, long2, driver_status),
-                            daemon=True).start()
+                        _enqueue_save_image(frame.copy(), folder_path, speed, lat, long2, driver_status)
 
                 else:
                     driver_status = 'Active'
@@ -458,12 +502,12 @@ def main():
                     log_info(f"NoFace detected for {no_face_duration:.1f}s - buzzer activated")
                     no_face_start_time = current_time  # Reset timer for next interval
 
-            # Add frame to event buffer at throttled rate (2 FPS)
-            # Reuse detect_frame (already 320x240) — no extra resize needed
+            # Add full-res frame to event buffer at throttled rate (2 FPS)
+            # Uses 640x480 for image quality; raw bytes stored, JPEG encoding in save worker
             if current_time - last_buffer_frame_time >= buffer_frame_interval:
                 last_buffer_frame_time = current_time
                 event_buffer.add_frame(
-                    frame=detect_frame,
+                    frame=frame,
                     speed=speed,
                     lat=lat,
                     long=long2,
@@ -474,10 +518,7 @@ def main():
             # Send GPS data periodically for Active status (for live tracking)
             if driver_status == 'Active' and float(lat) != 0.0 and float(long2) != 0.0:
                 if current_time - last_gps_send_time >= gps_send_interval:
-                    threading.Thread(
-                        target=add_gps_data,
-                        args=(lat, long2, speed, str(datetime.now()), driver_status, acc)
-                    ).start()
+                    _enqueue_gps(lat, long2, speed, str(datetime.now()), driver_status, acc)
                     last_gps_send_time = current_time
 
             # 15-minute interval driver verification capture
