@@ -207,7 +207,8 @@ class FaceMesh:
 
     def _decode_detections(self, raw_boxes, raw_scores):
         """Decode BlazeFace SSD output to a face bounding box."""
-        scores = 1.0 / (1.0 + np.exp(-raw_scores[0, :, 0]))  # sigmoid
+        raw = np.clip(raw_scores[0, :, 0], -80.0, 80.0)
+        scores = 1.0 / (1.0 + np.exp(-raw))  # sigmoid
 
         # Filter by threshold
         mask = scores > self._det_threshold
