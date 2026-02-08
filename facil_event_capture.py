@@ -25,7 +25,7 @@ from get_configure import get_configure
 from facial_tracking.facialTracking import FacialTracker
 import facial_tracking.conf as conf
 from blnk_led import stop_blinking, start_blinking
-from buzzer_controller import buzz_for
+from buzzer_controller import buzz_for, stop_continuous_buzz
 from event_capture import init_event_capture, get_event_buffer, shutdown_event_capture
 
 
@@ -359,9 +359,10 @@ def main():
                             _blink_thread.start()
                 else:
                     driver_status = 'Active'
-                    # Stop LED blinking for active status (throttled)
+                    # Stop LED blinking and continuous buzzer for active status (throttled)
                     if current_time - last_led_stop_time >= led_stop_interval:
                         stop_blinking()  # Direct call, no thread needed (just sets flag + GPIO off)
+                        stop_continuous_buzz()
                         last_led_stop_time = current_time
             else:
                 driver_status = 'NoFace'
@@ -387,9 +388,10 @@ def main():
                         # Update the threshold for next buzz
                         no_face_start_time = current_time  # Reset timer for next 2-second interval
 
-                # Stop LED when no face (throttled)
+                # Stop LED and continuous buzzer when no face (throttled)
                 if current_time - last_led_stop_time >= led_stop_interval:
                     stop_blinking()  # Direct call
+                    stop_continuous_buzz()
                     last_led_stop_time = current_time
 
             # Add frame to event buffer at throttled rate (2 FPS)
@@ -430,6 +432,7 @@ def main():
         log_info("Shutting down...")
     finally:
         # Graceful shutdown
+        stop_continuous_buzz()
         shutdown_event_capture()
         cap.release()
         GPIO.cleanup()

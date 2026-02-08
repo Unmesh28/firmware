@@ -5,7 +5,7 @@ import facial_tracking.conf as conf
 from facial_tracking.faceMesh import FaceMesh
 from facial_tracking.eye import Eye
 from facial_tracking.lips import Lips
-from buzzer_controller import buzz_once
+from buzzer_controller import start_continuous_buzz, stop_continuous_buzz
 
 class FacialTracker:
     """
@@ -74,12 +74,15 @@ class FacialTracker:
 
         if self._left_eye_closed() and self._right_eye_closed():
             self.eyes_status = 'eye closed'
-            # Only buzz on state transition (not every frame)
+            # Start continuous buzzer on state transition (not every frame)
             if self._prev_eyes_status != 'eye closed':
-                buzz_once(0.12)
+                start_continuous_buzz()
             self._prev_eyes_status = 'eye closed'
             return
 
+        # Stop buzzer when transitioning out of 'eye closed'
+        if self._prev_eyes_status == 'eye closed':
+            stop_continuous_buzz()
         self._prev_eyes_status = self.eyes_status
 
         if not self.left_eye.eye_closed() and not self.right_eye.eye_closed():
@@ -103,12 +106,15 @@ class FacialTracker:
 
         if self.yawn_frames > conf.FRAME_YAWN:
             self.yawn_status = 'yawning'
-            # Only buzz on state transition (not every frame)
+            # Start continuous buzzer on state transition (not every frame)
             if self._prev_yawn_status != 'yawning':
-                buzz_once(0.12)
+                start_continuous_buzz()
             self._prev_yawn_status = 'yawning'
             return
 
+        # Stop buzzer when transitioning out of 'yawning'
+        if self._prev_yawn_status == 'yawning':
+            stop_continuous_buzz()
         self._prev_yawn_status = self.yawn_status
 
     def _left_eye_closed(self, threshold=conf.FRAME_CLOSED):
