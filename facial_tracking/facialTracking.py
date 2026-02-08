@@ -44,6 +44,16 @@ class FacialTracker:
 
     def _check_eyes_status(self):
         self.eyes_status = ''
+
+        # Diagnostic: log eye ratios every 30 frames for threshold calibration
+        if not hasattr(self, '_eye_log_count'):
+            self._eye_log_count = 0
+        self._eye_log_count += 1
+        if self._eye_log_count % 30 == 0:
+            l_ratio = self.left_eye.eye_veti_to_hori
+            r_ratio = self.right_eye.eye_veti_to_hori
+            print(f"EYE_RATIO L={l_ratio:.3f} R={r_ratio:.3f} thresh={conf.EYE_CLOSED} L_closed_frames={self.left_eye_closed_frames} R_closed_frames={self.right_eye_closed_frames}")
+
         if self.left_eye.eye_closed():
             self.left_eye_closed_frames += 1
             self.left_eye_gap_frames = 0
