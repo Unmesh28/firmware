@@ -81,7 +81,7 @@ class EventFrameBuffer:
     PRE_EVENT_SECONDS = 2.0
     POST_EVENT_SECONDS = 1.0
     MAX_EVENT_SECONDS = 10.0    # Force complete after 10 seconds
-    BUFFER_SIZE = int(FPS * 2)  # 4 frames at 2 FPS (~900KB raw at 320x240)
+    BUFFER_SIZE = int(FPS * 2)  # 4 frames at 2 FPS (~3.6MB raw at 640x480)
     JPEG_QUALITY = 40           # Used in save worker, not main thread
     EVENT_COOLDOWN = 3.0        # Seconds to wait after event before starting new one
 

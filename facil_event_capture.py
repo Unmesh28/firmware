@@ -502,12 +502,12 @@ def main():
                     log_info(f"NoFace detected for {no_face_duration:.1f}s - buzzer activated")
                     no_face_start_time = current_time  # Reset timer for next interval
 
-            # Add frame to event buffer at throttled rate (2 FPS)
-            # Reuse detect_frame (already 320x240) — no extra resize needed
+            # Add full-res frame to event buffer at throttled rate (2 FPS)
+            # Uses 640x480 for image quality; raw bytes stored, JPEG encoding in save worker
             if current_time - last_buffer_frame_time >= buffer_frame_interval:
                 last_buffer_frame_time = current_time
                 event_buffer.add_frame(
-                    frame=detect_frame,
+                    frame=frame,
                     speed=speed,
                     lat=lat,
                     long=long2,
