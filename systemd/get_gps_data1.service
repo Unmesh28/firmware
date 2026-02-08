@@ -24,10 +24,12 @@ ExecStart=/home/pi/facial-tracker-firmware/venv/bin/python \
 Restart=always
 RestartSec=3
 
-# Lower priority than facial tracking (Nice=-5)
+# Lower priority than facial tracking — needed for speed data but must not block I/O
 Nice=5
-CPUWeight=50
-MemoryMax=80M
+CPUWeight=30
+IOSchedulingClass=idle
+IOSchedulingPriority=7
+MemoryMax=50M
 
 StandardOutput=journal
 StandardError=journal
