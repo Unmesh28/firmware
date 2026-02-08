@@ -21,6 +21,7 @@ mkdir -p "$BUNDLE_DIR"
 cp -r facial_tracking "$BUNDLE_DIR/"
 cp -r ota "$BUNDLE_DIR/"
 cp -r systemd "$BUNDLE_DIR/"
+cp -r setup "$BUNDLE_DIR/"
 cp *.py "$BUNDLE_DIR/"
 cp requirements.txt "$BUNDLE_DIR/"
 
