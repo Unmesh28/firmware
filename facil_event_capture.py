@@ -24,7 +24,7 @@ from get_user_info import get_user_info
 from get_configure import get_configure
 from facial_tracking.facialTracking import FacialTracker
 import facial_tracking.conf as conf
-from blnk_led import stop_blinking, start_blinking
+from blnk_led import stop_blinking, start_blinking, refresh_blinking
 from buzzer_controller import buzz_for, start_continuous_buzz, stop_continuous_buzz
 from event_capture import init_event_capture, get_event_buffer, shutdown_event_capture
 
@@ -184,6 +184,49 @@ def capture_and_send_verification_image(frame, lat, long2, speed, acc):
         log_error(f"Error sending driver verification: {str(e)}")
         return False
 
+# Image annotation settings
+FONT = cv2.FONT_HERSHEY_SIMPLEX
+FONT_SCALE = 0.4
+FONT_THICKNESS = 1
+_padding_x = 4
+_padding_y = 3
+_top_left = (15, 15)
+
+def save_image(frame, folder_path, speed, lat2, long2, driver_status):
+    """Save annotated image with driver status overlay and footer."""
+    lat2 = round(float(lat2), 4)
+    long2 = round(float(long2), 4)
+    timestamp_obj = datetime.now()
+    timestamp = timestamp_obj.strftime("%Y-%m-%d %H:%M:%S")
+    filename_time = timestamp_obj.strftime("%Y%m%d_%H%M%S%f")
+    image_file = os.path.join(folder_path, f"{filename_time}.jpg")
+
+    # Draw driver status box at top
+    driver_text = f"Driver Status: {driver_status}"
+    (text_width, text_height), _ = cv2.getTextSize(driver_text, FONT, FONT_SCALE, FONT_THICKNESS)
+    bottom_right = (_top_left[0] + text_width + 2 * _padding_x, _top_left[1] + text_height + 2 * _padding_y)
+    cv2.rectangle(frame, _top_left, bottom_right, (139, 104, 0), -1)
+    cv2.rectangle(frame, _top_left, bottom_right, (0, 0, 0), 1)
+    text_position = (_top_left[0] + _padding_x, _top_left[1] + text_height + _padding_y - 2)
+    cv2.putText(frame, driver_text, text_position, FONT, FONT_SCALE, (255, 255, 255), FONT_THICKNESS, cv2.LINE_AA)
+
+    # Draw footer with metadata
+    h, w = frame.shape[:2]
+    footer_text = [
+        "Sapience Automata 2025",
+        f"Time:{timestamp}",
+        f"Lat,Long:{lat2},{long2}",
+        f"Speed:{speed} Km/h"
+    ]
+    cv2.rectangle(frame, (0, h - 30), (w, h), (255, 0, 0), -1)
+    x = 5
+    for text in footer_text:
+        cv2.putText(frame, text, (x, h - 10), FONT, FONT_SCALE, (255, 255, 255), FONT_THICKNESS, cv2.LINE_AA)
+        (tw, _), _ = cv2.getTextSize(text, FONT, FONT_SCALE, FONT_THICKNESS)
+        x += tw + 10
+
+    cv2.imwrite(image_file, frame, [cv2.IMWRITE_JPEG_QUALITY, 80])
+
 def map_driver_status(status):
     """Map device driver status to backend expected format"""
     status_map = {
@@ -251,11 +294,6 @@ def main():
     # Reuse single threads for LED control instead of spawning new ones each frame
     _blink_thread = None
     _blink_thread_lock = threading.Lock()
-
-    # Continuous buzzer grace period: keep buzzing for 2s after last alert frame
-    # to bridge noisy frames that flicker between detected/not-detected
-    last_alert_time = 0
-    BUZZ_GRACE_PERIOD = 2.0
 
     # Track NoFace detection for buzzer trigger
     no_face_start_time = None
@@ -344,6 +382,9 @@ def main():
                 gc.collect()
 
             # Determine driver status
+            # Watchdog pattern: buzzer & LED auto-stop if not refreshed.
+            # During Sleeping/Yawning: call start_continuous_buzz() + refresh_blinking() every frame.
+            # When condition clears: explicit stop for instant response, watchdog as safety net.
             if facial_tracker.detected:
                 # Reset NoFace timer when face is detected
                 no_face_start_time = None
@@ -351,32 +392,40 @@ def main():
 
                 if facial_tracker.eyes_status == 'eye closed':
                     driver_status = 'Sleeping'
-                    last_alert_time = current_time
-                    start_continuous_buzz()
+                    start_continuous_buzz()   # Refreshes watchdog each frame
+                    refresh_blinking()        # Refreshes LED watchdog each frame
                     # Start blinking only if not already blinking (avoid thread storm)
                     with _blink_thread_lock:
                         if _blink_thread is None or not _blink_thread.is_alive():
                             _blink_thread = threading.Thread(target=start_blinking, daemon=True)
                             _blink_thread.start()
+                    save_image(frame.copy(), folder_path, speed, lat, long2, driver_status)
+
                 elif facial_tracker.yawn_status == 'yawning':
                     driver_status = 'Yawning'
-                    last_alert_time = current_time
-                    start_continuous_buzz()
+                    start_continuous_buzz()   # Refreshes watchdog each frame
+                    refresh_blinking()        # Refreshes LED watchdog each frame
                     with _blink_thread_lock:
                         if _blink_thread is None or not _blink_thread.is_alive():
                             _blink_thread = threading.Thread(target=start_blinking, daemon=True)
                             _blink_thread.start()
+                    save_image(frame.copy(), folder_path, speed, lat, long2, driver_status)
+
                 else:
                     driver_status = 'Active'
-                    # Stop LED blinking and buzzer for active status (throttled)
-                    # Grace period: only stop buzzer after 2s of no alert frames
+                    # Explicit stop for instant response (watchdog is safety net)
                     if current_time - last_led_stop_time >= led_stop_interval:
                         stop_blinking()
-                        if current_time - last_alert_time > BUZZ_GRACE_PERIOD:
-                            stop_continuous_buzz()
+                        stop_continuous_buzz()
                         last_led_stop_time = current_time
             else:
                 driver_status = 'NoFace'
+
+                # Stop continuous alerts (driver not visible)
+                if current_time - last_led_stop_time >= led_stop_interval:
+                    stop_blinking()
+                    stop_continuous_buzz()
+                    last_led_stop_time = current_time
 
                 # Start tracking NoFace duration
                 if no_face_start_time is None:
@@ -388,23 +437,10 @@ def main():
 
                 # Buzz every 2 seconds continuously while NoFace persists
                 if no_face_duration >= NO_FACE_THRESHOLD:
-                    # Calculate how many 2-second intervals have passed
-                    intervals_passed = int(no_face_duration // NO_FACE_THRESHOLD)
-
-                    # Check if we should buzz again (new interval reached)
-                    if not no_face_buzzer_triggered or no_face_duration >= (intervals_passed * NO_FACE_THRESHOLD):
-                        buzz_for(BUZZER_DURATION)  # Now non-blocking (runs in background thread internally)
-                        no_face_buzzer_triggered = True
-                        log_info(f"NoFace detected for {no_face_duration:.1f}s - buzzer activated (interval {intervals_passed})")
-                        # Update the threshold for next buzz
-                        no_face_start_time = current_time  # Reset timer for next 2-second interval
-
-                # Stop LED and continuous buzzer when no face (throttled)
-                if current_time - last_led_stop_time >= led_stop_interval:
-                    stop_blinking()
-                    if current_time - last_alert_time > BUZZ_GRACE_PERIOD:
-                        stop_continuous_buzz()
-                    last_led_stop_time = current_time
+                    buzz_for(BUZZER_DURATION)  # Self-limiting: runs for duration then stops
+                    no_face_buzzer_triggered = True
+                    log_info(f"NoFace detected for {no_face_duration:.1f}s - buzzer activated")
+                    no_face_start_time = current_time  # Reset timer for next interval
 
             # Add frame to event buffer at throttled rate (2 FPS)
             # Downscale to 320x240 before adding — reduces JPEG encoding time by ~4x
