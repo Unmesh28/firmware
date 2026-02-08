@@ -78,9 +78,6 @@ class FacialTracker:
 
     def _check_yawn_status(self):
         self.yawn_status = ''
-        # Log lip ratio for threshold calibration (only when mouth visibly open)
-        if self.lips.mouth_open_ratio > 0.1:
-            print(f"LIP_RATIO: {self.lips.mouth_open_ratio:.3f} (threshold: {conf.MOUTH_OPEN})")
         if self.lips.mouth_open():
             self.yawn_status = 'yawning'
 
