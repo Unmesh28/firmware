@@ -22,7 +22,18 @@ class FacialTracker:
         self.yawn_frames = 0
         self.yawn_gap_frames = 0
         self.detected = False  # Initialize the detected attribute
-        
+
+        # Hysteresis: allow small gaps in detection without resetting counters
+        # At 320x240 downscale, landmarks are noisier — single frame misdetections
+        # would reset counters and prevent threshold from ever being reached
+        self.left_eye_gap_frames = 0
+        self.right_eye_gap_frames = 0
+        self._EYE_GAP_TOLERANCE = 3  # Allow up to 3 missed frames before resetting
+
+        # Track previous status to only buzz on state transition (not every frame)
+        self._prev_eyes_status = ''
+        self._prev_yawn_status = ''
+
     def process_frame(self, frame):
         """Process the frame to analyze facial status."""
         self.detected = False  # Reset detected status for each frame
@@ -38,42 +49,39 @@ class FacialTracker:
                 self._check_eyes_status()
                 self._check_yawn_status()
                 break  # Only process the first face (skip multi-face loop overhead)
-    
+
     def _check_eyes_status(self):
         self.eyes_status = ''
-        #buzzer1 = Buzzer(17)  # for PCB, it's 12 & 13, and for normal device it's 17 & 22
-        #buzzer2 = Buzzer(22)
         if self.left_eye.eye_closed():
             self.left_eye_closed_frames += 1
+            self.left_eye_gap_frames = 0
         else:
-            self.left_eye_closed_frames = 0
+            self.left_eye_gap_frames += 1
+            if self.left_eye_gap_frames > self._EYE_GAP_TOLERANCE:
+                self.left_eye_closed_frames = 0
             if not conf.HEADLESS and self.left_eye.iris:
                 self.left_eye.iris.draw_iris(True)
 
         if self.right_eye.eye_closed():
             self.right_eye_closed_frames += 1
+            self.right_eye_gap_frames = 0
         else:
-            self.right_eye_closed_frames = 0
+            self.right_eye_gap_frames += 1
+            if self.right_eye_gap_frames > self._EYE_GAP_TOLERANCE:
+                self.right_eye_closed_frames = 0
             if not conf.HEADLESS and self.right_eye.iris:
                 self.right_eye.iris.draw_iris(True)
-        
+
         if self._left_eye_closed() and self._right_eye_closed():
             self.eyes_status = 'eye closed'
-            buzz_once(0.12)
-            
-            #self.buzzer1.on()
-            #self.buzzer2.on()
-            #sleep(0.12)
-            #self.buzzer1.off()
-            #self.buzzer2.off()
-            
-            #buzzer1.beep()
-            #buzzer2.beep()
-            #sleep(0.12)
-            #buzzer1.off()
-            #buzzer2.off()
+            # Only buzz on state transition (not every frame)
+            if self._prev_eyes_status != 'eye closed':
+                buzz_once(0.12)
+            self._prev_eyes_status = 'eye closed'
             return
-        
+
+        self._prev_eyes_status = self.eyes_status
+
         if not self.left_eye.eye_closed() and not self.right_eye.eye_closed():
             if self.left_eye.gaze_right() and self.right_eye.gaze_right():
                 self.eyes_status = 'gazing right'
@@ -84,9 +92,7 @@ class FacialTracker:
 
     def _check_yawn_status(self):
         self.yawn_status = ''
-        
-        #buzzer1 = Buzzer(17)
-        #buzzer2 = Buzzer(22)
+
         if self.lips.mouth_open():
             self.yawn_frames += 1
             self.yawn_gap_frames = 0
@@ -94,23 +100,17 @@ class FacialTracker:
             self.yawn_gap_frames += 1
             if self.yawn_gap_frames > conf.FRAME_TOLERANCE:
                 self.yawn_frames = 0
-        
+
         if self.yawn_frames > conf.FRAME_YAWN:
             self.yawn_status = 'yawning'
-            buzz_once(0.12)
-            
-            #self.buzzer1.on()
-            #self.buzzer2.on()
-            #sleep(0.12)
-            #self.buzzer1.off()
-            #self.buzzer2.off()
-            
-            #buzzer1.beep()
-            #buzzer2.beep()
-            #sleep(0.12)
-            #buzzer1.off()
-            #buzzer2.off()
-    
+            # Only buzz on state transition (not every frame)
+            if self._prev_yawn_status != 'yawning':
+                buzz_once(0.12)
+            self._prev_yawn_status = 'yawning'
+            return
+
+        self._prev_yawn_status = self.yawn_status
+
     def _left_eye_closed(self, threshold=conf.FRAME_CLOSED):
         return self.left_eye_closed_frames > threshold
     
