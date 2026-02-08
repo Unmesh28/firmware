@@ -62,6 +62,10 @@ SERVICES = [
     {'name': 'send-data-api', 'display': 'Send Data API', 'description': 'API data sender'},
 ]
 
+# Non-essential services that can be toggled off for max performance
+# Stopping these frees CPU/RAM/I/O for facial detection
+MONITORING_SERVICES = ['send-data-api', 'upload_images', 'ota-auto-update']
+
 # Camera streaming globals
 camera = None
 camera_lock = threading.Lock()
@@ -268,14 +272,30 @@ HTML_TEMPLATE = '''
         
         <!-- Services Panel -->
         <div id="services" class="panel">
+            <!-- Remote Monitoring Toggle -->
+            <div class="card" style="border: 1px solid #4c6ef5;">
+                <div style="display:flex; align-items:center; justify-content:space-between;">
+                    <div>
+                        <div style="font-weight:600; font-size:0.95em;">Remote Monitoring</div>
+                        <div style="font-size:0.75em; color:#888;">Cloud upload, data sync, OTA updates</div>
+                    </div>
+                    <label style="position:relative; display:inline-block; width:50px; height:26px; cursor:pointer;">
+                        <input type="checkbox" id="monitoringToggle" onchange="toggleMonitoring(this.checked)" style="opacity:0; width:0; height:0;">
+                        <span id="toggleSlider" style="position:absolute; top:0; left:0; right:0; bottom:0; background:#c92a2a; border-radius:26px; transition:0.3s;"></span>
+                        <span id="toggleKnob" style="position:absolute; top:3px; left:3px; width:20px; height:20px; background:white; border-radius:50%; transition:0.3s;"></span>
+                    </label>
+                </div>
+                <div id="monitoringStatus" style="font-size:0.75em; color:#ff6b6b; margin-top:8px;">OFF - Max performance for detection</div>
+            </div>
+
             <div class="card">
                 <div id="servicesList">Loading...</div>
             </div>
             <button class="btn btn-success" onclick="controlAllServices('start')">
-                ▶ Start All
+                Start All
             </button>
             <button class="btn btn-danger" onclick="controlAllServices('stop')">
-                ■ Stop All
+                Stop All
             </button>
             <button class="btn btn-secondary" onclick="loadServices()">
                 Refresh
@@ -738,9 +758,64 @@ HTML_TEMPLATE = '''
             });
         }
         
+        // === Monitoring Toggle ===
+        function checkMonitoring() {
+            fetch('/api/monitoring/status')
+                .then(r => r.json())
+                .then(data => {
+                    const toggle = document.getElementById('monitoringToggle');
+                    const slider = document.getElementById('toggleSlider');
+                    const knob = document.getElementById('toggleKnob');
+                    const status = document.getElementById('monitoringStatus');
+                    toggle.checked = data.enabled;
+                    if (data.enabled) {
+                        slider.style.background = '#2f9e44';
+                        knob.style.left = '27px';
+                        status.style.color = '#51cf66';
+                        status.textContent = 'ON - Cloud sync active';
+                    } else {
+                        slider.style.background = '#c92a2a';
+                        knob.style.left = '3px';
+                        status.style.color = '#ff6b6b';
+                        status.textContent = 'OFF - Max performance for detection';
+                    }
+                });
+        }
+
+        function toggleMonitoring(enable) {
+            const slider = document.getElementById('toggleSlider');
+            const knob = document.getElementById('toggleKnob');
+            const status = document.getElementById('monitoringStatus');
+            status.textContent = enable ? 'Starting...' : 'Stopping...';
+            status.style.color = '#fcc419';
+
+            fetch('/api/monitoring/toggle', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ enable: enable })
+            })
+            .then(r => r.json())
+            .then(data => {
+                if (data.enabled) {
+                    slider.style.background = '#2f9e44';
+                    knob.style.left = '27px';
+                    status.style.color = '#51cf66';
+                    status.textContent = 'ON - Cloud sync active';
+                } else {
+                    slider.style.background = '#c92a2a';
+                    knob.style.left = '3px';
+                    status.style.color = '#ff6b6b';
+                    status.textContent = 'OFF - Max performance for detection';
+                }
+                showMessage(data.enabled ? 'Monitoring enabled' : 'Monitoring disabled', 'success');
+                setTimeout(loadServices, 1000);
+            });
+        }
+
         // Init
         checkStatus();
         loadActivationSpeed();
+        checkMonitoring();
     </script>
 </body>
 </html>
@@ -1190,6 +1265,47 @@ def api_delete_device():
             'success': False,
             'error': str(e)
         })
+
+
+# --- Monitoring Toggle APIs ---
+
+@app.route('/api/monitoring/status')
+def api_monitoring_status():
+    """Check if remote monitoring services are running"""
+    active_count = 0
+    for svc in MONITORING_SERVICES:
+        if get_service_status(svc) == 'active':
+            active_count += 1
+    # Consider enabled if majority of services are running
+    return jsonify({'enabled': active_count > len(MONITORING_SERVICES) // 2})
+
+
+@app.route('/api/monitoring/toggle', methods=['POST'])
+def api_monitoring_toggle():
+    """Enable or disable remote monitoring services (cloud upload, OTA, data sync)"""
+    data = request.get_json()
+    enable = data.get('enable', True)
+    action = 'start' if enable else 'stop'
+
+    results = []
+    for svc in MONITORING_SERVICES:
+        success, msg = run_service_command(svc, action)
+        results.append(f"{svc}: {'ok' if success else 'failed'}")
+
+    # Also handle OTA timer (controls periodic scheduling)
+    try:
+        subprocess.run(
+            ['sudo', 'systemctl', action, 'ota-auto-update.timer'],
+            capture_output=True, text=True, timeout=10
+        )
+    except Exception:
+        pass
+
+    return jsonify({
+        'success': True,
+        'enabled': enable,
+        'details': results
+    })
 
 
 # --- Service APIs ---

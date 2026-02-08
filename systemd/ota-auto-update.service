@@ -21,9 +21,11 @@ Restart=on-failure
 RestartSec=60
 
 # Lowest priority - OTA only needs to run occasionally
-Nice=15
-CPUWeight=10
-MemoryMax=60M
+Nice=19
+CPUWeight=5
+IOSchedulingClass=idle
+IOSchedulingPriority=7
+MemoryMax=40M
 
 StandardOutput=journal
 StandardError=journal

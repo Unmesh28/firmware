@@ -319,9 +319,10 @@ def main():
     last_save_time = 0
     SAVE_IMAGE_INTERVAL = 1.0
 
-    # Detection resolution: half of capture for ~3x faster MediaPipe inference
-    # Eye blink ratio = (top-bottom)/(left-right) — scale-invariant, accuracy preserved
-    # Lip open ratio = same — scale-invariant
+    # Detection resolution: half of capture to reduce preprocessing overhead
+    # MediaPipe resizes to fixed model input internally, so savings are in
+    # cvtColor + internal resize (~5-10ms). Main benefit: less memory pressure.
+    # Eye/lip ratios are scale-invariant, so accuracy is preserved.
     DETECT_W = conf.FRAME_W // 2  # 320
     DETECT_H = conf.FRAME_H // 2  # 240
 
@@ -370,9 +371,8 @@ def main():
                 time.sleep(0.01)
                 continue
 
-            # Downscale for detection: 320x240 = 3x faster inference than 640x480
+            # Downscale for detection: reduces cvtColor + internal resize overhead
             # Eye/lip ratios are scale-invariant — identical detection accuracy
-            # INTER_AREA is optimal for decimation (moire-free downscale)
             detect_frame = cv2.resize(frame, (DETECT_W, DETECT_H), interpolation=cv2.INTER_AREA)
 
             last_detection_time = current_time
