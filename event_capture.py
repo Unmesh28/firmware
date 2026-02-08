@@ -3,9 +3,10 @@ Event-Based Frame Buffer & GIF Generation - Device Side
 
 This module implements:
 1. Circular frame buffer (deque) in RAM
-2. Event state machine: IDLE → EVENT_ACTIVE → POST_EVENT → UPLOAD
-3. Pre-event (2.5s) and post-event (1s) frame capture
-4. Event folder structure for batch upload
+2. Event state machine: IDLE → EVENT_ACTIVE → POST_EVENT → SAVING
+3. Pre-event (2s) and post-event (1s) frame capture
+4. Single save worker thread with queue (prevents SD card I/O storms)
+5. Event cooldown to prevent rapid start/stop cycling
 """
 
 import os
@@ -21,6 +22,7 @@ from datetime import datetime
 from enum import Enum
 from dataclasses import dataclass, field
 from typing import Optional, List, Deque
+from queue import Queue
 from log import log_info, log_error
 
 
@@ -29,15 +31,17 @@ class EventState(Enum):
     IDLE = "idle"
     EVENT_ACTIVE = "event_active"
     POST_EVENT = "post_event"
-    UPLOAD = "upload"
 
 
 @dataclass
 class FrameData:
-    """Container for frame with metadata - stores compressed JPEG bytes to save RAM"""
-    frame_bytes: bytes  # JPEG compressed bytes (~30KB vs ~900KB raw)
-    timestamp: float  # time.time()
-    datetime_str: str  # formatted datetime string
+    """Container for frame with metadata.
+    Stores raw numpy bytes — JPEG encoding happens in the save worker thread,
+    NOT on the main detection thread. At 320x240, each frame is ~225KB raw."""
+    frame_raw: bytes       # Raw numpy frame bytes (tobytes)
+    frame_shape: tuple     # (h, w, channels) for reconstruction
+    timestamp: float
+    datetime_str: str
     speed: str
     lat: str
     long: str
@@ -54,7 +58,7 @@ class EventData:
     end_time: Optional[float] = None
     frames: List[FrameData] = field(default_factory=list)
     folder_path: Optional[str] = None
-    
+
     def get_folder_name(self) -> str:
         """Generate folder name: timestamp_event_id"""
         dt = datetime.fromtimestamp(self.start_time)
@@ -64,79 +68,68 @@ class EventData:
 class EventFrameBuffer:
     """
     Manages circular frame buffer and event capture logic.
-    
-    Features:
-    - Circular buffer stores last N frames (pre-event buffer)
-    - On event trigger: copies pre-event frames + captures during event + post-event frames
-    - Saves event frames to folder structure
-    - Triggers upload after event completion
+
+    Key design for Pi Zero 2W performance:
+    - add_frame() does ZERO JPEG encoding — just stores raw numpy bytes (~0.1ms)
+    - JPEG encoding happens in a single persistent save worker thread
+    - Event cooldown prevents rapid start/stop cycling that causes I/O storms
+    - Single save worker serializes SD card writes (no concurrent I/O)
     """
-    
+
     # Configuration - optimized for Pi Zero 2W (512MB RAM)
-    FPS = 2  # Buffer capture rate (matched to main loop's buffer_frame_interval)
-    PRE_EVENT_SECONDS = 2.0  # Reduced from 2.5s
+    FPS = 2                     # Buffer capture rate
+    PRE_EVENT_SECONDS = 2.0
     POST_EVENT_SECONDS = 1.0
-    MAX_EVENT_SECONDS = 10.0  # Force complete after 10 seconds
-    BUFFER_SIZE = int(FPS * 2)  # 2 seconds buffer (4 frames at 2 FPS)
-    JPEG_QUALITY = 40  # Lower quality for smaller files and faster encoding
-    
-    # NoFace: save only 1 frame per minute (not as full event)
+    MAX_EVENT_SECONDS = 10.0    # Force complete after 10 seconds
+    BUFFER_SIZE = int(FPS * 2)  # 4 frames at 2 FPS (~900KB raw at 320x240)
+    JPEG_QUALITY = 40           # Used in save worker, not main thread
+    EVENT_COOLDOWN = 3.0        # Seconds to wait after event before starting new one
+
+    # NoFace: save only 1 frame per minute
     NOFACE_INTERVAL_SECONDS = 60
-    
+
     def __init__(self, base_events_path: str, upload_callback=None):
-        """
-        Initialize the event frame buffer.
-        
-        Args:
-            base_events_path: Base path for storing event folders
-            upload_callback: Function to call when event is ready for upload
-        """
         self.base_events_path = base_events_path
         self.upload_callback = upload_callback
-        
+
         # Circular buffer for pre-event frames
         self.frame_buffer: Deque[FrameData] = deque(maxlen=self.BUFFER_SIZE)
-        
+
         # Current state
         self.state = EventState.IDLE
         self.current_event: Optional[EventData] = None
-        
+
         # Timing
         self.event_end_time: Optional[float] = None
         self.last_critical_status: Optional[str] = None
-        
-        # NoFace tracking - save only 1 frame per minute
+        self.last_event_complete_time: float = 0  # For cooldown
+
+        # NoFace tracking
         self.last_noface_save_time: float = 0
-        
-        # Thread safety
+
+        # Thread safety for state machine
         self.lock = threading.Lock()
-        
-        # Create base events directory
+
+        # Single persistent save worker — serializes all SD card I/O
+        self._save_queue: Queue = Queue(maxsize=10)
+        self._save_worker = threading.Thread(target=self._save_worker_loop, daemon=True)
+        self._save_worker.start()
+
         os.makedirs(base_events_path, exist_ok=True)
-        
-        log_info(f"EventFrameBuffer initialized: buffer_size={self.BUFFER_SIZE}, pre_event={self.PRE_EVENT_SECONDS}s, post_event={self.POST_EVENT_SECONDS}s")
-    
+        log_info(f"EventFrameBuffer initialized: buffer_size={self.BUFFER_SIZE}, cooldown={self.EVENT_COOLDOWN}s")
+
     def add_frame(self, frame, speed: str, lat: str, long: str, acc: str, driver_status: str):
-        """
-        Add a frame to the buffer. Called for every captured frame.
-        
-        Args:
-            frame: OpenCV frame
-            speed: Current speed
-            lat: Latitude
-            long: Longitude
-            acc: Acceleration
-            driver_status: Current driver status (Active, Sleeping, Yawning, NoFace, etc.)
+        """Add a frame to the buffer. Called from main detection loop.
+
+        CRITICAL: This does NO JPEG encoding. Just stores raw numpy bytes.
+        Cost: ~0.1ms (numpy tobytes) vs ~5-10ms (cv2.imencode).
         """
         current_time = time.time()
-        
-        # Compress frame to JPEG bytes (~30KB vs ~900KB raw) - critical for Pi Zero 2W
-        encode_param = [cv2.IMWRITE_JPEG_QUALITY, self.JPEG_QUALITY]
-        _, encoded = cv2.imencode('.jpg', frame, encode_param)
-        frame_bytes = encoded.tobytes()
-        
+
+        # Store raw frame bytes — JPEG encoding moves to save worker
         frame_data = FrameData(
-            frame_bytes=frame_bytes,  # Store compressed bytes to save RAM
+            frame_raw=frame.tobytes(),
+            frame_shape=frame.shape,
             timestamp=current_time,
             datetime_str=datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
             speed=speed,
@@ -145,163 +138,160 @@ class EventFrameBuffer:
             acceleration=acc,
             driver_status=driver_status
         )
-        
+
         with self.lock:
-            # Always add to circular buffer (for pre-event capture)
+            # Always add to circular buffer
             self.frame_buffer.append(frame_data)
-            
-            # Separate NoFace from critical events (Sleeping/Yawning)
+
             is_noface = driver_status in ['NoFace', 'No Face']
-            is_critical = driver_status in ['Sleeping', 'Yawning', 
+            is_critical = driver_status in ['Sleeping', 'Yawning',
                                             'Sleeping/Looking Down', 'Yawning/Fatigued']
-            
-            # Handle NoFace separately - save only 1 frame per minute
+
+            # Handle NoFace separately — 1 frame per minute
             if is_noface:
                 self._handle_noface(frame_data, current_time)
                 return
-            
+
             if self.state == EventState.IDLE:
                 if is_critical:
+                    # Cooldown check: don't start new event too soon after last one
+                    if current_time - self.last_event_complete_time < self.EVENT_COOLDOWN:
+                        return
                     self._start_event(driver_status, current_time)
-                    
+
             elif self.state == EventState.EVENT_ACTIVE:
                 if is_critical:
-                    # Continue capturing during event
                     self.current_event.frames.append(frame_data)
                     self.last_critical_status = driver_status
-                    
-                    # Force complete if event exceeds max duration (prevent RAM overflow)
+                    # Force complete if too long
                     if current_time - self.current_event.start_time >= self.MAX_EVENT_SECONDS:
-                        log_info(f"Event {self.current_event.event_id} exceeded max duration ({self.MAX_EVENT_SECONDS}s), force completing")
+                        log_info(f"Event {self.current_event.event_id} exceeded max duration, force completing")
                         self._transition_to_post_event(current_time)
                 else:
-                    # Event ended, start post-event capture
                     self._transition_to_post_event(current_time)
-                    
+
             elif self.state == EventState.POST_EVENT:
-                # Capture post-event frames
                 self.current_event.frames.append(frame_data)
-                
-                # Check if post-event period is complete
                 if current_time - self.event_end_time >= self.POST_EVENT_SECONDS:
-                    self._complete_event()
-    
+                    self._complete_event(current_time)
+
     def _start_event(self, driver_status: str, current_time: float):
         """Start a new event capture"""
         event_id = f"evt_{uuid.uuid4().hex[:8]}"
-        
-        # Map status to clean event type
         event_type = self._map_status_to_event_type(driver_status)
-        
+
         self.current_event = EventData(
             event_id=event_id,
             event_type=event_type,
             start_time=current_time,
             frames=[]
         )
-        
+
         # Copy pre-event frames from buffer
         pre_event_cutoff = current_time - self.PRE_EVENT_SECONDS
         for frame_data in self.frame_buffer:
             if frame_data.timestamp >= pre_event_cutoff:
                 self.current_event.frames.append(frame_data)
-        
+
         self.state = EventState.EVENT_ACTIVE
         self.last_critical_status = driver_status
-        
         log_info(f"Event started: {event_id}, type={event_type}, pre_frames={len(self.current_event.frames)}")
-    
+
     def _handle_noface(self, frame_data: FrameData, current_time: float):
-        """Handle NoFace - save only 1 frame per minute (not as full event)"""
-        time_since_last = current_time - self.last_noface_save_time
-        
-        if time_since_last < self.NOFACE_INTERVAL_SECONDS:
-            # Skip - not enough time since last NoFace save
+        """Handle NoFace — save only 1 frame per minute"""
+        if current_time - self.last_noface_save_time < self.NOFACE_INTERVAL_SECONDS:
             return
-        
-        # Save single NoFace frame
+
         self.last_noface_save_time = current_time
-        
         event_id = f"noface_{uuid.uuid4().hex[:8]}"
         noface_event = EventData(
             event_id=event_id,
             event_type='NoFace',
             start_time=current_time,
             end_time=current_time,
-            frames=[frame_data]  # Only 1 frame
+            frames=[frame_data]
         )
-        
-        # Create folder and save immediately
+
         folder_name = noface_event.get_folder_name()
         noface_event.folder_path = os.path.join(self.base_events_path, folder_name)
-        os.makedirs(noface_event.folder_path, exist_ok=True)
-        
         log_info(f"NoFace captured: {event_id} (1 frame, next in {self.NOFACE_INTERVAL_SECONDS}s)")
-        
-        # Save in background thread
-        save_thread = threading.Thread(
-            target=self._save_event_frames,
-            args=(noface_event,)
-        )
-        save_thread.start()
-    
+
+        # Queue for save worker (non-blocking)
+        self._enqueue_save(noface_event)
+
     def _transition_to_post_event(self, current_time: float):
         """Transition from active event to post-event capture"""
         self.event_end_time = current_time
         self.current_event.end_time = current_time
         self.state = EventState.POST_EVENT
-        
         log_info(f"Event {self.current_event.event_id} ended, capturing post-event frames for {self.POST_EVENT_SECONDS}s")
-    
-    def _complete_event(self):
-        """Complete the event and trigger save/upload"""
+
+    def _complete_event(self, current_time: float):
+        """Complete the event and queue for saving"""
         if not self.current_event:
             return
-        
+
         event = self.current_event
-        
-        # Create event folder
         folder_name = event.get_folder_name()
         event.folder_path = os.path.join(self.base_events_path, folder_name)
-        os.makedirs(event.folder_path, exist_ok=True)
-        
+
         log_info(f"Event {event.event_id} complete: {len(event.frames)} frames, saving to {event.folder_path}")
-        
-        # Save frames in background thread
-        save_thread = threading.Thread(
-            target=self._save_event_frames,
-            args=(event,)
-        )
-        save_thread.start()
-        
-        # Reset state
+
+        # Queue for save worker
+        self._enqueue_save(event)
+
+        # Reset state with cooldown
         self.state = EventState.IDLE
         self.current_event = None
         self.event_end_time = None
         self.last_critical_status = None
-    
-    def _save_event_frames(self, event: EventData):
-        """Save event frames to disk (lightweight: write raw JPEG bytes, skip annotation to save CPU)"""
-        try:
-            # Lower thread priority to avoid stealing CPU from MediaPipe inference
-            try:
-                os.nice(10)
-            except OSError:
-                pass
+        self.last_event_complete_time = current_time
 
+    def _enqueue_save(self, event: EventData):
+        """Queue an event for the save worker. Drop if queue full (backpressure)."""
+        try:
+            self._save_queue.put_nowait(event)
+        except Exception:
+            log_error(f"Save queue full, dropping event {event.event_id}")
+            event.frames.clear()
+
+    def _save_worker_loop(self):
+        """Persistent save worker thread. Serializes all SD card I/O.
+        Runs at lowest priority to avoid stealing CPU from detection."""
+        try:
+            os.nice(10)
+        except OSError:
+            pass
+
+        while True:
+            try:
+                event = self._save_queue.get()
+                self._save_event_frames(event)
+            except Exception as e:
+                log_error(f"Save worker error: {e}")
+
+    def _save_event_frames(self, event: EventData):
+        """Save event frames to disk. JPEG encoding happens HERE, not main thread."""
+        try:
+            os.makedirs(event.folder_path, exist_ok=True)
             frame_paths = []
+            encode_param = [cv2.IMWRITE_JPEG_QUALITY, self.JPEG_QUALITY]
 
             for i, frame_data in enumerate(event.frames):
                 filename = f"frame_{i:04d}.jpg"
                 filepath = os.path.join(event.folder_path, filename)
 
-                # Write raw JPEG bytes directly — no decode/annotate/re-encode cycle
-                # Saves ~5-10ms CPU per frame on Pi Zero 2W (vs decode+draw+encode)
+                # Reconstruct numpy array from raw bytes, then JPEG encode
+                frame = np.frombuffer(frame_data.frame_raw, dtype=np.uint8).reshape(frame_data.frame_shape)
+                _, encoded = cv2.imencode('.jpg', frame, encode_param)
                 with open(filepath, 'wb') as f:
-                    f.write(frame_data.frame_bytes)
+                    f.write(encoded.tobytes())
                 frame_paths.append(filepath)
 
-            # Save event metadata (contains all info that was previously annotated on frames)
+                # Yield between frames to avoid hogging I/O
+                time.sleep(0.01)
+
+            # Save metadata
             metadata_path = os.path.join(event.folder_path, "event_meta.txt")
             with open(metadata_path, 'w') as f:
                 f.write(f"event_id={event.event_id}\n")
@@ -316,61 +306,15 @@ class EventFrameBuffer:
 
             log_info(f"Event {event.event_id} saved: {len(frame_paths)} frames")
 
-            # Clear frames from memory after saving to free RAM
+            # Free RAM
             event.frames.clear()
 
-            # Trigger upload callback
             if self.upload_callback:
                 self.upload_callback(event)
 
         except Exception as e:
-            log_error(f"Error saving event {event.event_id}: {str(e)}")
-    
-    def _annotate_frame(self, frame_data: FrameData):
-        """Add overlay text to frame"""
-        # Decode JPEG bytes back to frame
-        nparr = np.frombuffer(frame_data.frame_bytes, np.uint8)
-        frame = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
-        
-        if frame is None:
-            return None
-        
-        h, w = frame.shape[:2]
-        
-        # Font settings
-        font = cv2.FONT_HERSHEY_SIMPLEX
-        font_scale = 0.4
-        thickness = 1
-        
-        # Driver status overlay (top-left)
-        status_text = f"Status: {frame_data.driver_status}"
-        (tw, th), _ = cv2.getTextSize(status_text, font, font_scale, thickness)
-        cv2.rectangle(frame, (10, 10), (20 + tw, 20 + th), (139, 104, 0), -1)
-        cv2.putText(frame, status_text, (15, 15 + th), font, font_scale, (255, 255, 255), thickness, cv2.LINE_AA)
-        
-        # Footer overlay
-        # Format lat/long to 4 decimal places to fit speed in frame
-        try:
-            lat_formatted = f"{float(frame_data.lat):.4f}"
-            long_formatted = f"{float(frame_data.long):.4f}"
-        except (ValueError, TypeError):
-            lat_formatted = frame_data.lat
-            long_formatted = frame_data.long
-        footer_texts = [
-            "Sapience Automata 2025",
-            f"Time:{frame_data.datetime_str}",
-            f"Lat,Long:{lat_formatted},{long_formatted}",
-            f"Speed:{frame_data.speed} Km/h"
-        ]
-        cv2.rectangle(frame, (0, h - 30), (w, h), (255, 0, 0), -1)
-        x = 5
-        for text in footer_texts:
-            cv2.putText(frame, text, (x, h - 10), font, font_scale, (255, 255, 255), thickness, cv2.LINE_AA)
-            (tw, _), _ = cv2.getTextSize(text, font, font_scale, thickness)
-            x += tw + 10
-        
-        return frame
-    
+            log_error(f"Error saving event {event.event_id}: {e}")
+
     def _map_status_to_event_type(self, status: str) -> str:
         """Map driver status to clean event type"""
         status_map = {
@@ -382,64 +326,52 @@ class EventFrameBuffer:
             'NoFace': 'NoFace',
         }
         return status_map.get(status, status)
-    
+
     def force_complete_event(self):
         """Force complete current event (e.g., on shutdown)"""
         with self.lock:
             if self.current_event and self.state in [EventState.EVENT_ACTIVE, EventState.POST_EVENT]:
                 log_info(f"Force completing event {self.current_event.event_id}")
-                self._complete_event()
+                self._complete_event(time.time())
 
 
 class EventUploader:
     """
     Handles uploading event folders to the server.
-    
-    Features:
-    - Uploads entire event folder after completion
-    - Sends frames as base64 array
-    - Cleans up after successful upload
+    Uploads entire event folder after completion.
     """
-    
+
     def __init__(self, device_id: str, auth_token: str, api_base_url: str = "https://api.copilotai.click"):
         self.device_id = device_id
         self.auth_token = auth_token
         self.api_base_url = api_base_url
         self.upload_queue = []
         self.lock = threading.Lock()
-    
+
     def upload_event(self, event: EventData):
-        """
-        Upload an event to the server.
-        
-        Args:
-            event: EventData with saved frames
-        """
+        """Upload an event to the server."""
         if not event.folder_path or not os.path.exists(event.folder_path):
             log_error(f"Event folder not found: {event.folder_path}")
             return
-        
+
         try:
             import requests
-            
-            # Collect all frame files
+
             frame_files = sorted([
-                f for f in os.listdir(event.folder_path) 
+                f for f in os.listdir(event.folder_path)
                 if f.startswith('frame_') and f.endswith('.jpg')
             ])
-            
+
             if not frame_files:
                 log_error(f"No frames found in event folder: {event.folder_path}")
                 return
-            
-            # Encode frames to base64
+
             frames_base64 = []
             for frame_file in frame_files:
                 frame_path = os.path.join(event.folder_path, frame_file)
                 with open(frame_path, 'rb') as f:
                     frames_base64.append(base64.b64encode(f.read()).decode('utf-8'))
-            
-            # Read metadata
+
             metadata = {}
             meta_path = os.path.join(event.folder_path, "event_meta.txt")
             if os.path.exists(meta_path):
@@ -448,8 +380,7 @@ class EventUploader:
                         if '=' in line:
                             key, value = line.strip().split('=', 1)
                             metadata[key] = value
-            
-            # Prepare payload
+
             payload = {
                 "device_id": self.device_id,
                 "event_id": event.event_id,
@@ -462,53 +393,41 @@ class EventUploader:
                 "long": metadata.get('long', '0'),
                 "speed": metadata.get('speed', '0'),
             }
-            
+
             headers = {
                 'Authorization': f'Bearer {self.auth_token}',
                 'Content-Type': 'application/json'
             }
-            
-            # Upload to server
+
             url = f"{self.api_base_url}/api/upload-event"
             response = requests.post(url, json=payload, headers=headers, timeout=60)
-            
+
             if response.status_code == 201:
                 log_info(f"Event {event.event_id} uploaded successfully ({len(frames_base64)} frames)")
-                
-                # Clean up local folder after successful upload
                 shutil.rmtree(event.folder_path)
                 log_info(f"Cleaned up event folder: {event.folder_path}")
             else:
                 log_error(f"Event upload failed: {response.status_code} - {response.text}")
-                
+
         except Exception as e:
-            log_error(f"Error uploading event {event.event_id}: {str(e)}")
+            log_error(f"Error uploading event {event.event_id}: {e}")
 
 
-# Global instance for use in main script
+# Global instance
 _event_buffer: Optional[EventFrameBuffer] = None
 _event_uploader: Optional[EventUploader] = None
 
 
 def init_event_capture(base_events_path: str, device_id: str, auth_token: str):
-    """
-    Initialize the event capture system.
-    
-    Args:
-        base_events_path: Path to store event folders
-        device_id: Device ID for API calls
-        auth_token: Auth token for API calls
-    """
+    """Initialize the event capture system."""
     global _event_buffer, _event_uploader
-    
-    # upload_images.py service handles uploads via /api/events/upload
-    # Don't pass upload_callback here to avoid double-uploading events
+
     _event_uploader = EventUploader(device_id, auth_token)
     _event_buffer = EventFrameBuffer(
         base_events_path=base_events_path,
         upload_callback=None
     )
-    
+
     log_info("Event capture system initialized")
     return _event_buffer
 
