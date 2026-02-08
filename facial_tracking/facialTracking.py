@@ -21,6 +21,11 @@ class FacialTracker:
         self.right_eye_closed_frames = 0
         self.detected = False  # Initialize the detected attribute
 
+        # Allow 1 noisy "open" frame without resetting closed counter
+        # At ~10 FPS with CPU contention, single frames can misdetect
+        self.left_eye_gap_frames = 0
+        self.right_eye_gap_frames = 0
+
     def process_frame(self, frame):
         """Process the frame to analyze facial status."""
         self.detected = False  # Reset detected status for each frame
@@ -41,15 +46,21 @@ class FacialTracker:
         self.eyes_status = ''
         if self.left_eye.eye_closed():
             self.left_eye_closed_frames += 1
+            self.left_eye_gap_frames = 0
         else:
-            self.left_eye_closed_frames = 0
+            self.left_eye_gap_frames += 1
+            if self.left_eye_gap_frames > 1:
+                self.left_eye_closed_frames = 0
             if not conf.HEADLESS and self.left_eye.iris:
                 self.left_eye.iris.draw_iris(True)
 
         if self.right_eye.eye_closed():
             self.right_eye_closed_frames += 1
+            self.right_eye_gap_frames = 0
         else:
-            self.right_eye_closed_frames = 0
+            self.right_eye_gap_frames += 1
+            if self.right_eye_gap_frames > 1:
+                self.right_eye_closed_frames = 0
             if not conf.HEADLESS and self.right_eye.iris:
                 self.right_eye.iris.draw_iris(True)
 
