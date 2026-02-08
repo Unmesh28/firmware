@@ -31,6 +31,6 @@ LIPS       = [291,  61,  13,  14]
 # Threshold (EYE_CLOSED may need tuning: ~0.20 for MediaPipe, ~0.15 for TFLite)
 GAZE_LEFT  = 0.2
 GAZE_RIGHT = 0.8
-EYE_CLOSED = float(os.getenv('EYE_CLOSED', '0.20'))
+EYE_CLOSED = float(os.getenv('EYE_CLOSED', '0.15'))
 MOUTH_OPEN = float(os.getenv('MOUTH_OPEN', '0.8'))
 FRAME_CLOSED = int(os.getenv('FRAME_CLOSED', '6'))
