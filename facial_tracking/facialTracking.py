@@ -5,7 +5,7 @@ import facial_tracking.conf as conf
 from facial_tracking.faceMesh import FaceMesh
 from facial_tracking.eye import Eye
 from facial_tracking.lips import Lips
-from buzzer_controller import buzz_once
+from buzzer_controller import start_continuous_buzz, stop_continuous_buzz
 
 class FacialTracker:
     """
@@ -19,16 +19,7 @@ class FacialTracker:
         self.lips = None
         self.left_eye_closed_frames = 0
         self.right_eye_closed_frames = 0
-        self.yawn_frames = 0
-        self.yawn_gap_frames = 0
         self.detected = False  # Initialize the detected attribute
-
-        # Hysteresis: allow small gaps in detection without resetting counters
-        # At 320x240 downscale, landmarks are noisier — single frame misdetections
-        # would reset counters and prevent threshold from ever being reached
-        self.left_eye_gap_frames = 0
-        self.right_eye_gap_frames = 0
-        self._EYE_GAP_TOLERANCE = 3  # Allow up to 3 missed frames before resetting
 
         # Track previous status to only buzz on state transition (not every frame)
         self._prev_eyes_status = ''
@@ -54,32 +45,29 @@ class FacialTracker:
         self.eyes_status = ''
         if self.left_eye.eye_closed():
             self.left_eye_closed_frames += 1
-            self.left_eye_gap_frames = 0
         else:
-            self.left_eye_gap_frames += 1
-            if self.left_eye_gap_frames > self._EYE_GAP_TOLERANCE:
-                self.left_eye_closed_frames = 0
+            self.left_eye_closed_frames = 0
             if not conf.HEADLESS and self.left_eye.iris:
                 self.left_eye.iris.draw_iris(True)
 
         if self.right_eye.eye_closed():
             self.right_eye_closed_frames += 1
-            self.right_eye_gap_frames = 0
         else:
-            self.right_eye_gap_frames += 1
-            if self.right_eye_gap_frames > self._EYE_GAP_TOLERANCE:
-                self.right_eye_closed_frames = 0
+            self.right_eye_closed_frames = 0
             if not conf.HEADLESS and self.right_eye.iris:
                 self.right_eye.iris.draw_iris(True)
 
         if self._left_eye_closed() and self._right_eye_closed():
             self.eyes_status = 'eye closed'
-            # Only buzz on state transition (not every frame)
+            # Start continuous buzzer on state transition (not every frame)
             if self._prev_eyes_status != 'eye closed':
-                buzz_once(0.12)
+                start_continuous_buzz()
             self._prev_eyes_status = 'eye closed'
             return
 
+        # Stop buzzer when transitioning out of 'eye closed'
+        if self._prev_eyes_status == 'eye closed':
+            stop_continuous_buzz()
         self._prev_eyes_status = self.eyes_status
 
         if not self.left_eye.eye_closed() and not self.right_eye.eye_closed():
@@ -94,21 +82,16 @@ class FacialTracker:
         self.yawn_status = ''
 
         if self.lips.mouth_open():
-            self.yawn_frames += 1
-            self.yawn_gap_frames = 0
-        else:
-            self.yawn_gap_frames += 1
-            if self.yawn_gap_frames > conf.FRAME_TOLERANCE:
-                self.yawn_frames = 0
-
-        if self.yawn_frames > conf.FRAME_YAWN:
             self.yawn_status = 'yawning'
-            # Only buzz on state transition (not every frame)
+            # Start continuous buzzer on state transition (not every frame)
             if self._prev_yawn_status != 'yawning':
-                buzz_once(0.12)
+                start_continuous_buzz()
             self._prev_yawn_status = 'yawning'
             return
 
+        # Stop buzzer when transitioning out of 'yawning'
+        if self._prev_yawn_status == 'yawning':
+            stop_continuous_buzz()
         self._prev_yawn_status = self.yawn_status
 
     def _left_eye_closed(self, threshold=conf.FRAME_CLOSED):

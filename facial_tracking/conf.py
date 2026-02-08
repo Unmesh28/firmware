@@ -9,8 +9,8 @@ CAM_ID  = 0
 FRAME_W = int(os.getenv('FRAME_W', '640'))
 FRAME_H = int(os.getenv('FRAME_H', '480'))
 
-# MediaPipe settings - disable iris refinement in production to save ~30% CPU
-REFINE_LANDMARKS = os.getenv('REFINE_LANDMARKS', '0').strip().lower() in {'1', 'true', 'yes', 'on'}
+# MediaPipe settings - iris refinement improves eye/lip landmark accuracy
+REFINE_LANDMARKS = os.getenv('REFINE_LANDMARKS', '1').strip().lower() in {'1', 'true', 'yes', 'on'}
 MIN_DETECTION_CONFIDENCE = float(os.getenv('MIN_DETECTION_CONFIDENCE', '0.5'))
 MIN_TRACKING_CONFIDENCE = float(os.getenv('MIN_TRACKING_CONFIDENCE', '0.5'))
 
@@ -32,7 +32,5 @@ LIPS       = [291,  61,  13,  14]
 GAZE_LEFT  = 0.2
 GAZE_RIGHT = 0.8
 EYE_CLOSED = 0.20
-MOUTH_OPEN = 0.65
+MOUTH_OPEN = 0.8
 FRAME_CLOSED = 12
-FRAME_YAWN = 2
-FRAME_TOLERANCE = 2

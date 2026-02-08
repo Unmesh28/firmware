@@ -18,6 +18,11 @@ BUZZ_COOLDOWN_SECONDS = 0.5  # Minimum time between buzzes (max 2 buzzes/sec)
 _buzz_lock = threading.Lock()
 _buzz_active = False  # Prevent overlapping buzz threads
 
+# Continuous buzzing state (for sleeping/yawning alerts)
+_continuous_buzz_active = False
+_continuous_buzz_thread = None
+_continuous_lock = threading.Lock()
+
 def _do_buzz(duration):
     """Internal: run buzzer for duration, then turn off."""
     global _buzz_active
@@ -69,3 +74,37 @@ def buzz_once(duration):
         _buzz_active = True
 
     threading.Thread(target=_do_buzz, args=(duration,), daemon=True).start()
+
+def _continuous_buzz_loop():
+    """Internal: continuously beep on/off until stopped."""
+    global _continuous_buzz_active
+    while _continuous_buzz_active:
+        buzzer1.on()
+        buzzer2.on()
+        sleep(0.15)
+        buzzer1.off()
+        buzzer2.off()
+        if _continuous_buzz_active:
+            sleep(0.1)
+
+def start_continuous_buzz():
+    """Start continuous beeping in a background thread. Idempotent."""
+    global _continuous_buzz_active, _continuous_buzz_thread
+    with _continuous_lock:
+        if _continuous_buzz_active:
+            return  # Already buzzing continuously
+        _continuous_buzz_active = True
+        _continuous_buzz_thread = threading.Thread(target=_continuous_buzz_loop, daemon=True)
+        _continuous_buzz_thread.start()
+        logger.info("Continuous buzzer STARTED")
+
+def stop_continuous_buzz():
+    """Stop the continuous beeping. Idempotent."""
+    global _continuous_buzz_active
+    with _continuous_lock:
+        if not _continuous_buzz_active:
+            return  # Not buzzing, nothing to stop
+        _continuous_buzz_active = False
+        logger.info("Continuous buzzer STOPPED")
+    buzzer1.off()
+    buzzer2.off()
