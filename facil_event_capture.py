@@ -288,10 +288,6 @@ def main():
     last_gps_send_time = 0
     gps_send_interval = 2  # Send GPS every 2 seconds when Active
 
-    # Track last LED stop time to avoid spawning too many threads
-    last_led_stop_time = 0
-    led_stop_interval = 1.0  # Only call stop_blinking once per second max
-
     # Reuse single threads for LED control instead of spawning new ones each frame
     _blink_thread = None
     _blink_thread_lock = threading.Lock()
@@ -437,19 +433,15 @@ def main():
 
                 else:
                     driver_status = 'Active'
-                    # Explicit stop for instant response (watchdog is safety net)
-                    if current_time - last_led_stop_time >= led_stop_interval:
-                        stop_blinking()
-                        stop_continuous_buzz()
-                        last_led_stop_time = current_time
+                    # Immediate stop — no throttle. Just flag+GPIO ops, very cheap.
+                    stop_blinking()
+                    stop_continuous_buzz()
             else:
                 driver_status = 'NoFace'
 
-                # Stop continuous alerts (driver not visible)
-                if current_time - last_led_stop_time >= led_stop_interval:
-                    stop_blinking()
-                    stop_continuous_buzz()
-                    last_led_stop_time = current_time
+                # Immediate stop of continuous alerts (driver not visible)
+                stop_blinking()
+                stop_continuous_buzz()
 
                 # Start tracking NoFace duration
                 if no_face_start_time is None:

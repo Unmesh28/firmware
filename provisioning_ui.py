@@ -54,12 +54,15 @@ if AP_MANAGER_AVAILABLE:
 
 app = Flask(__name__)
 
-# Services to manage
+# All services to manage (shown in UI with individual start/stop/restart)
 SERVICES = [
-    {'name': 'facial1', 'display': 'Facial Tracking', 'description': 'Driver monitoring'},
-    {'name': 'get_gps_data1', 'display': 'GPS Tracking', 'description': 'Location data'},
-    {'name': 'upload_images', 'display': 'Image Upload', 'description': 'Upload to cloud'},
-    {'name': 'send-data-api', 'display': 'Send Data API', 'description': 'API data sender'},
+    {'name': 'facial1', 'display': 'Facial Tracking', 'description': 'Driver drowsiness detection'},
+    {'name': 'get_gps_data1', 'display': 'GPS Tracking', 'description': 'GPS + MQTT data'},
+    {'name': 'send-data-api', 'display': 'Data Sync', 'description': 'Telemetry to cloud API'},
+    {'name': 'upload_images', 'display': 'Image Upload', 'description': 'Upload images to cloud'},
+    {'name': 'ota-auto-update', 'display': 'OTA Updates', 'description': 'Auto-update daemon'},
+    {'name': 'provisioning_ui', 'display': 'Web UI', 'description': 'This management page'},
+    {'name': 'pi-control', 'display': 'Pi Control', 'description': 'Remote device control'},
 ]
 
 # Non-essential services that can be toggled off for max performance
@@ -131,9 +134,9 @@ HTML_TEMPLATE = '''
         }
         .btn-sm {
             width: auto;
-            padding: 8px 16px;
+            padding: 6px 10px;
             font-size: 0.8em;
-            margin: 4px;
+            margin: 2px;
         }
         .btn-primary { background: #4c6ef5; color: white; }
         .btn-success { background: #2f9e44; color: white; }
@@ -511,7 +514,9 @@ HTML_TEMPLATE = '''
                                 <div class="service-desc">${s.description} - ${s.status}</div>
                             </div>
                             <div class="service-actions">
-                                <button class="btn btn-sm btn-primary" onclick="controlService('${s.name}', 'restart')">🔄</button>
+                                <button class="btn btn-sm btn-success" onclick="controlService('${s.name}', 'start')" ${s.active ? 'disabled' : ''} title="Start">▶</button>
+                                <button class="btn btn-sm btn-danger" onclick="controlService('${s.name}', 'stop')" ${!s.active ? 'disabled' : ''} title="Stop">■</button>
+                                <button class="btn btn-sm btn-primary" onclick="controlService('${s.name}', 'restart')" title="Restart">🔄</button>
                             </div>
                         </div>
                     `).join('');

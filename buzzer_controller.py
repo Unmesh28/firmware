@@ -39,50 +39,61 @@ def buzz_for(duration):
     threading.Thread(target=_do_buzz, args=(duration,), daemon=True).start()
 
 # --- Continuous buzz with WATCHDOG (sleeping/yawning alerts) ---
-# Dead man's switch: buzzer auto-stops if not refreshed within WATCHDOG_TIMEOUT.
-# Call start_continuous_buzz() every frame to keep it alive.
-# This makes it IMPOSSIBLE for the buzzer to get stuck.
+# Two safety mechanisms to prevent stuck buzzer:
+# 1. Watchdog: auto-stops if not refreshed within WATCHDOG_TIMEOUT
+# 2. Max duration: force-stops after MAX_CONTINUOUS_DURATION regardless
 
 _continuous_buzz_active = False
 _continuous_buzz_thread = None
 _continuous_lock = threading.Lock()
 _last_refresh_time = 0
-WATCHDOG_TIMEOUT = 2.5  # Auto-stop after 2.5s without refresh
+_buzz_start_time = 0
+WATCHDOG_TIMEOUT = 2.5        # Auto-stop after 2.5s without refresh
+MAX_CONTINUOUS_DURATION = 60   # Hard limit: force-stop after 60s no matter what
 
 def _continuous_buzz_loop():
-    """Internal: beep on/off until stopped OR watchdog timeout."""
+    """Internal: beep on/off until stopped, watchdog timeout, or max duration."""
     global _continuous_buzz_active
     while _continuous_buzz_active:
-        # Watchdog check: auto-stop if no refresh
-        if time.time() - _last_refresh_time > WATCHDOG_TIMEOUT:
+        now = time.time()
+        # Watchdog: auto-stop if main loop stopped refreshing
+        if now - _last_refresh_time > WATCHDOG_TIMEOUT:
             _continuous_buzz_active = False
             buzzer1.off()
             buzzer2.off()
-            logger.info("Continuous buzzer WATCHDOG TIMEOUT - auto-stopped")
+            logger.info("Buzzer WATCHDOG TIMEOUT - auto-stopped")
             return
+        # Safety valve: force-stop after max duration
+        if now - _buzz_start_time > MAX_CONTINUOUS_DURATION:
+            _continuous_buzz_active = False
+            buzzer1.off()
+            buzzer2.off()
+            logger.info("Buzzer MAX DURATION reached (%ds) - force-stopped", MAX_CONTINUOUS_DURATION)
+            return
+        # Beep: short ON, then OFF. Buzzer spends more time OFF than ON
+        # so if process freezes, it's more likely to freeze in OFF state
         buzzer1.on()
         buzzer2.on()
-        sleep(0.15)
+        sleep(0.12)
         buzzer1.off()
         buzzer2.off()
-        if _continuous_buzz_active:
-            sleep(0.1)
+        sleep(0.1)
 
 def start_continuous_buzz():
-    """Start or refresh continuous beeping. Call every frame to keep alive.
-    Watchdog auto-stops if this isn't called for 2.5 seconds."""
-    global _continuous_buzz_active, _continuous_buzz_thread, _last_refresh_time
+    """Start or refresh continuous beeping. Call every frame to keep alive."""
+    global _continuous_buzz_active, _continuous_buzz_thread, _last_refresh_time, _buzz_start_time
     _last_refresh_time = time.time()  # Refresh watchdog
     with _continuous_lock:
         if _continuous_buzz_active and _continuous_buzz_thread and _continuous_buzz_thread.is_alive():
             return  # Already running, just refreshed timestamp
         _continuous_buzz_active = True
+        _buzz_start_time = time.time()
         _continuous_buzz_thread = threading.Thread(target=_continuous_buzz_loop, daemon=True)
         _continuous_buzz_thread.start()
         logger.info("Continuous buzzer STARTED")
 
 def stop_continuous_buzz():
-    """Immediately stop continuous beeping. Also called by watchdog."""
+    """Immediately stop continuous beeping."""
     global _continuous_buzz_active
     with _continuous_lock:
         if not _continuous_buzz_active:
