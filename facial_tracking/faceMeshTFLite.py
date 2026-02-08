@@ -35,12 +35,31 @@ class _LandmarkPoint:
         self.z = z
 
 
+class _LazyLandmarkList:
+    """Array-backed landmarks — creates _LandmarkPoint only on access.
+
+    Avoids creating 468 objects per frame; only ~20 are accessed for
+    eye/lip detection.
+    """
+    __slots__ = ('_pts',)
+
+    def __init__(self, pts):
+        self._pts = pts  # (468, 3) numpy array in frame-normalized coords
+
+    def __getitem__(self, idx):
+        p = self._pts[idx]
+        return _LandmarkPoint(float(p[0]), float(p[1]), float(p[2]))
+
+    def __len__(self):
+        return len(self._pts)
+
+
 class _FaceLandmarks:
     """Container matching mediapipe face_landmarks.landmark[index] access."""
     __slots__ = ('landmark',)
 
-    def __init__(self, landmarks):
-        self.landmark = landmarks  # list of _LandmarkPoint
+    def __init__(self, pts_array):
+        self.landmark = _LazyLandmarkList(pts_array)
 
 
 class _MeshResult:
@@ -109,7 +128,7 @@ class FaceMesh:
 
         # Load detection model
         det_path = os.path.join(self._MODEL_DIR, self._DET_MODEL)
-        self._det = Interpreter(model_path=det_path, num_threads=4)
+        self._det = Interpreter(model_path=det_path, num_threads=2)
         self._det.allocate_tensors()
         self._det_inp = self._det.get_input_details()
         self._det_out = self._det.get_output_details()
@@ -117,7 +136,7 @@ class FaceMesh:
 
         # Load landmark model
         lm_path = os.path.join(self._MODEL_DIR, self._LM_MODEL)
-        self._lm = Interpreter(model_path=lm_path, num_threads=4)
+        self._lm = Interpreter(model_path=lm_path, num_threads=2)
         self._lm.allocate_tensors()
         self._lm_inp = self._lm.get_input_details()
         self._lm_out = self._lm.get_output_details()
@@ -125,6 +144,10 @@ class FaceMesh:
 
         # Pre-compute BlazeFace anchors
         self._anchors = _generate_ssd_anchors(self._det_size)
+
+        # Pre-allocated buffers to avoid per-frame allocations
+        lm_sz = self._lm_size
+        self._lm_buf = np.zeros((1, lm_sz, lm_sz, 3), dtype=np.float32)
 
         # State
         self._face_box = None  # [x1, y1, x2, y2] normalized 0-1
@@ -160,12 +183,12 @@ class FaceMesh:
             return
 
         # Run landmarks on the cropped face region
-        landmarks = self._run_landmarks(frame, self._face_box)
-        if landmarks is not None:
-            fl = _FaceLandmarks(landmarks)
+        pts = self._run_landmarks(frame, self._face_box)
+        if pts is not None:
+            fl = _FaceLandmarks(pts)
             self.mesh_result = _MeshResult([fl])
             # Update face box from landmarks for next-frame tracking
-            self._face_box = self._box_from_landmarks(landmarks)
+            self._face_box = self._box_from_landmarks(pts)
         else:
             # Lost face — force re-detection next frame
             self._face_box = None
@@ -275,7 +298,7 @@ class FaceMesh:
     # ------------------------------------------------------------------
 
     def _run_landmarks(self, frame, box):
-        """Crop face, run landmark model, return list of _LandmarkPoint or None."""
+        """Crop face, run landmark model, return (468,3) numpy array or None."""
         h, w = frame.shape[:2]
         x1, y1, x2, y2 = box
 
@@ -293,10 +316,10 @@ class FaceMesh:
         sz = self._lm_size
         img = cv2.resize(crop, (sz, sz))
         img = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
-        img = img.astype(np.float32) / 255.0
-        img = np.expand_dims(img, 0)
+        # Normalize and add batch dim in one step
+        np.divide(img, 255.0, out=self._lm_buf[0])
 
-        self._lm.set_tensor(self._lm_inp[0]['index'], img)
+        self._lm.set_tensor(self._lm_inp[0]['index'], self._lm_buf)
         self._lm.invoke()
 
         # Output 0: landmarks [1,1,1,1404] = 468*3 (x,y,z in 192x192 space)
@@ -310,10 +333,9 @@ class FaceMesh:
 
         # Decode landmarks: reshape to (468, 3), normalize to 0-1 in crop space,
         # then map to full-frame normalized coordinates.
-        pts = raw_lm.reshape(468, 3)
-        pts[:, 0] /= float(sz)  # x: 0-1 within crop
-        pts[:, 1] /= float(sz)  # y: 0-1 within crop
-        pts[:, 2] /= float(sz)  # z: depth (relative)
+        pts = raw_lm.reshape(468, 3).copy()
+        inv_sz = 1.0 / float(sz)
+        pts *= inv_sz
 
         # Map from crop-normalized to frame-normalized
         box_w = x2 - x1
@@ -321,14 +343,12 @@ class FaceMesh:
         pts[:, 0] = pts[:, 0] * box_w + x1
         pts[:, 1] = pts[:, 1] * box_h + y1
 
-        return [_LandmarkPoint(float(p[0]), float(p[1]), float(p[2])) for p in pts]
+        return pts
 
-    def _box_from_landmarks(self, landmarks):
-        """Compute a bounding box from landmarks for next-frame tracking."""
-        xs = [lm.x for lm in landmarks]
-        ys = [lm.y for lm in landmarks]
-        x1 = min(xs)
-        y1 = min(ys)
-        x2 = max(xs)
-        y2 = max(ys)
+    def _box_from_landmarks(self, pts):
+        """Compute a bounding box from (468,3) landmark array for tracking."""
+        x1 = float(pts[:, 0].min())
+        y1 = float(pts[:, 1].min())
+        x2 = float(pts[:, 0].max())
+        y2 = float(pts[:, 1].max())
         return self._expand_and_square(x1, y1, x2, y2)
