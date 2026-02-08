@@ -23,6 +23,7 @@ Environment=MIN_DETECTION_CONFIDENCE=0.5
 Environment=MIN_TRACKING_CONFIDENCE=0.5
 Environment=FACE_MODEL_DIR=/home/pi/facial-tracker-firmware/models
 Environment=EYE_CLOSED=0.15
+Environment=MOUTH_OPEN=0.35
 Environment=DETECT_INTERVAL=60
 
 # Optimize Python for production
