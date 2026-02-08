@@ -28,9 +28,9 @@ LEFT_EYE   = [263, 362, 386, 374, 473, 474, 475, 476, 477]
 RIGHT_EYE  = [133,  33, 159, 145, 468, 469, 470, 471, 472]
 LIPS       = [291,  61,  13,  14]
 
-# Threshold (EYE_CLOSED may need tuning: ~0.20 for MediaPipe, ~0.15 for TFLite)
+# Threshold (EYE_CLOSED: 0.22 works for TFLite at typical dashboard camera angles)
 GAZE_LEFT  = 0.2
 GAZE_RIGHT = 0.8
-EYE_CLOSED = float(os.getenv('EYE_CLOSED', '0.15'))
+EYE_CLOSED = float(os.getenv('EYE_CLOSED', '0.22'))
 MOUTH_OPEN = float(os.getenv('MOUTH_OPEN', '0.35'))
 FRAME_CLOSED = int(os.getenv('FRAME_CLOSED', '6'))
