@@ -221,7 +221,7 @@ def main():
     # Disable automatic garbage collection — run manually every N frames
     # Prevents GC pauses (10-50ms) during real-time inference
     gc.disable()
-    gc_interval = 100  # Run GC every 100 frames
+    gc_interval = 300  # Run GC every 300 frames (~30 sec at 10 FPS) to minimize pauses
 
     # Threaded camera: I/O runs in background thread, main loop never blocks on read
     cap = ThreadedCamera(src=conf.CAM_ID, width=conf.FRAME_W, height=conf.FRAME_H)
