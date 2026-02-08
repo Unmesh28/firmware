@@ -30,8 +30,10 @@ def _do_buzz(duration):
         buzzer1.on()
         buzzer2.on()
         sleep(duration)
-        buzzer1.off()
-        buzzer2.off()
+        # Don't turn off if continuous buzzing took over
+        if not _continuous_buzz_active:
+            buzzer1.off()
+            buzzer2.off()
     finally:
         _buzz_active = False
 
@@ -91,8 +93,9 @@ def start_continuous_buzz():
     """Start continuous beeping in a background thread. Idempotent."""
     global _continuous_buzz_active, _continuous_buzz_thread
     with _continuous_lock:
-        if _continuous_buzz_active:
-            return  # Already buzzing continuously
+        # Skip if already running (check both flag AND thread alive)
+        if _continuous_buzz_active and _continuous_buzz_thread and _continuous_buzz_thread.is_alive():
+            return
         _continuous_buzz_active = True
         _continuous_buzz_thread = threading.Thread(target=_continuous_buzz_loop, daemon=True)
         _continuous_buzz_thread.start()

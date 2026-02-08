@@ -210,6 +210,7 @@ def send_status_and_stop_led(lat, long2, speed, status, acc):
     _last_idle_send_time = now
 
     stop_blinking()  # Direct call, no thread needed (just sets flag + GPIO off)
+    stop_continuous_buzz()  # Stop buzzer when vehicle idle/stopped
     api_status = map_driver_status(status)
     threading.Thread(
         target=add_gps_data,
@@ -319,9 +320,8 @@ def main():
                 time.sleep(0.01)
                 continue
 
-            frame = cv2.flip(frame, 1)
-
-            # Process frame for facial detection
+            # Process frame for facial detection (no flip needed — MediaPipe
+            # detects faces in any orientation, flip only matters for display)
             last_detection_time = current_time
             t_start = time.time()
             facial_tracker.process_frame(frame)
