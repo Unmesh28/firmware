@@ -92,8 +92,20 @@ def acquire_lock():
         print("Kill existing process first: pkill -f facil_event_capture.py")
         sys.exit(1)
 
-# Initialize Redis client
-redis_client = redis.Redis(host='127.0.0.1', port=6379)
+# Initialize Redis client — retry on startup since Redis may start after us
+redis_client = None
+for _attempt in range(30):  # Wait up to 30 seconds for Redis
+    try:
+        redis_client = redis.Redis(host='127.0.0.1', port=6379)
+        redis_client.ping()
+        print(f"Redis connected (attempt {_attempt + 1})")
+        break
+    except (redis.exceptions.ConnectionError, redis.exceptions.RedisError):
+        print(f"Waiting for Redis... (attempt {_attempt + 1}/30)")
+        time.sleep(1)
+if redis_client is None:
+    print("WARNING: Redis not available, GPS data will use defaults")
+    redis_client = redis.Redis(host='127.0.0.1', port=6379)  # Create anyway, will fail gracefully
 
 # Get device information from the database
 device_id = get_device_id_from_db()
@@ -381,15 +393,18 @@ def main():
             # Batch Redis reads using pipeline (1 round-trip instead of 4)
             if current_time - last_redis_read_time >= redis_read_interval:
                 last_redis_read_time = current_time
-                redis_pipe.get('speed')
-                redis_pipe.get('lat')
-                redis_pipe.get('long')
-                redis_pipe.get('acc')
-                results = redis_pipe.execute()
-                cached_speed = decode_or_default(results[0])
-                cached_lat = decode_or_default(results[1], '0.0')
-                cached_long = decode_or_default(results[2], '0.0')
-                cached_acc = decode_or_default(results[3], '0')
+                try:
+                    redis_pipe.get('speed')
+                    redis_pipe.get('lat')
+                    redis_pipe.get('long')
+                    redis_pipe.get('acc')
+                    results = redis_pipe.execute()
+                    cached_speed = decode_or_default(results[0])
+                    cached_lat = decode_or_default(results[1], '0.0')
+                    cached_long = decode_or_default(results[2], '0.0')
+                    cached_acc = decode_or_default(results[3], '0')
+                except (redis.exceptions.ConnectionError, redis.exceptions.RedisError):
+                    pass  # Use cached values from last successful read
 
             speed = cached_speed
             lat = cached_lat

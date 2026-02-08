@@ -1,7 +1,7 @@
 [Unit]
 Description=Driver Sleeping Alarm
-After=network-online.target ota-startup.service
-Wants=network-online.target
+After=network-online.target ota-startup.service redis.service
+Wants=network-online.target redis.service
 Requires=ota-startup.service
 
 [Service]

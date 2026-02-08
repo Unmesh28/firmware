@@ -196,13 +196,13 @@ echo ""
 echo "[6/6] Disabling unnecessary system services"
 
 # Services that waste CPU/RAM on a headless embedded device
+# NOTE: Do NOT disable wpa_supplicant — it handles WiFi (needed for SSH!)
 DISABLE_SERVICES=(
     avahi-daemon          # mDNS — not needed for direct IP access
     bluetooth             # No Bluetooth needed
     hciuart               # Bluetooth UART
     triggerhappy          # Hotkey daemon — no keyboard
     ModemManager          # No cellular modem
-    wpa_supplicant        # Only if using NetworkManager instead
 )
 
 for svc in "${DISABLE_SERVICES[@]}"; do
