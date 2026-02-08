@@ -7,11 +7,11 @@ Wants=network-online.target
 Type=simple
 User=pi
 Group=pi
-EnvironmentFile=/home/pi/facial-tracker-firmware/.env
-WorkingDirectory=/home/pi/facial-tracker-firmware/current/apps
+Environment="PYTHONPATH=/home/pi/facial-tracker-firmware/src"
+WorkingDirectory=/home/pi/facial-tracker-firmware/src
 
 ExecStart=/home/pi/facial-tracker-firmware/venv/bin/python \
-          /home/pi/facial-tracker-firmware/current/apps/provisioning_ui.py
+          /home/pi/facial-tracker-firmware/src/provisioning_ui.py
 
 Restart=on-failure
 RestartSec=5

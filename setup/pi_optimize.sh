@@ -44,6 +44,10 @@ sed -i '/^core_freq=/d' "$CONFIG"
 sed -i '/^gpu_mem=/d' "$CONFIG"
 sed -i '/^#.*pi_optimize/d' "$CONFIG"
 
+# Remove camera-related entries too
+sed -i '/^camera_auto_detect=/d' "$CONFIG"
+sed -i '/^start_x=/d' "$CONFIG"
+
 # Append our settings
 cat >> "$CONFIG" << 'BOOT_EOF'
 
@@ -51,11 +55,15 @@ cat >> "$CONFIG" << 'BOOT_EOF'
 arm_freq=1200
 over_voltage=2
 core_freq=500
-gpu_mem=16
+gpu_mem=128
+# Legacy camera stack (required for V4L2 on Bookworm)
+camera_auto_detect=0
+start_x=1
 BOOT_EOF
 
 echo "  arm_freq=1200 (20% overclock, stable with heatsink)"
-echo "  gpu_mem=16 (frees 48MB RAM for ML)"
+echo "  gpu_mem=128 (required for legacy camera ISP)"
+echo "  camera_auto_detect=0 + start_x=1 (V4L2 legacy camera)"
 REBOOT_NEEDED=1
 
 # ─────────────────────────────────────────────
@@ -221,7 +229,8 @@ echo "=== Optimization Complete ==="
 echo ""
 echo "Changes applied:"
 echo "  [x] CPU overclock: 1000MHz → 1200MHz (+20%)"
-echo "  [x] GPU memory: 64MB → 16MB (frees 48MB for ML)"
+echo "  [x] GPU memory: → 128MB (required for legacy camera ISP)"
+echo "  [x] Camera: legacy V4L2 stack (camera_auto_detect=0, start_x=1)"
 echo "  [x] ZRAM swap: 256MB LZ4 (replaces slow SD card swap)"
 echo "  [x] CPU governor: performance (no clock ramping)"
 echo "  [x] tmpfs: /tmp (32MB) + /var/log (16MB) on RAM"

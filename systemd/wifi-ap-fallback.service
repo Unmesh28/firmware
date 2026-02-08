@@ -10,10 +10,10 @@ Type=oneshot
 RemainAfterExit=yes
 # Wait for WiFi interface to be ready before starting
 ExecStartPre=/bin/sleep 5
-ExecStart=/usr/bin/python3 /home/pi/facial-tracker-firmware/current/apps/wifi_ap_manager.py check
-ExecStop=/usr/bin/python3 /home/pi/facial-tracker-firmware/current/apps/wifi_ap_manager.py stop-ap
+ExecStart=/usr/bin/python3 /home/pi/facial-tracker-firmware/src/wifi_ap_manager.py check
+ExecStop=/usr/bin/python3 /home/pi/facial-tracker-firmware/src/wifi_ap_manager.py stop-ap
 User=root
-WorkingDirectory=/home/pi/facial-tracker-firmware/current/apps
+WorkingDirectory=/home/pi/facial-tracker-firmware/src
 Environment=PYTHONUNBUFFERED=1
 StandardOutput=journal
 StandardError=journal
