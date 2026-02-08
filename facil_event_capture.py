@@ -25,7 +25,7 @@ from get_configure import get_configure
 from facial_tracking.facialTracking import FacialTracker
 import facial_tracking.conf as conf
 from blnk_led import stop_blinking, start_blinking
-from buzzer_controller import buzz_for, stop_continuous_buzz
+from buzzer_controller import buzz_for, start_continuous_buzz, stop_continuous_buzz
 from event_capture import init_event_capture, get_event_buffer, shutdown_event_capture
 
 
@@ -251,6 +251,11 @@ def main():
     _blink_thread = None
     _blink_thread_lock = threading.Lock()
 
+    # Continuous buzzer grace period: keep buzzing for 2s after last alert frame
+    # to bridge noisy frames that flicker between detected/not-detected
+    last_alert_time = 0
+    BUZZ_GRACE_PERIOD = 2.0
+
     # Track NoFace detection for buzzer trigger
     no_face_start_time = None
     no_face_buzzer_triggered = False
@@ -346,6 +351,8 @@ def main():
 
                 if facial_tracker.eyes_status == 'eye closed':
                     driver_status = 'Sleeping'
+                    last_alert_time = current_time
+                    start_continuous_buzz()
                     # Start blinking only if not already blinking (avoid thread storm)
                     with _blink_thread_lock:
                         if _blink_thread is None or not _blink_thread.is_alive():
@@ -353,16 +360,20 @@ def main():
                             _blink_thread.start()
                 elif facial_tracker.yawn_status == 'yawning':
                     driver_status = 'Yawning'
+                    last_alert_time = current_time
+                    start_continuous_buzz()
                     with _blink_thread_lock:
                         if _blink_thread is None or not _blink_thread.is_alive():
                             _blink_thread = threading.Thread(target=start_blinking, daemon=True)
                             _blink_thread.start()
                 else:
                     driver_status = 'Active'
-                    # Stop LED blinking and continuous buzzer for active status (throttled)
+                    # Stop LED blinking and buzzer for active status (throttled)
+                    # Grace period: only stop buzzer after 2s of no alert frames
                     if current_time - last_led_stop_time >= led_stop_interval:
-                        stop_blinking()  # Direct call, no thread needed (just sets flag + GPIO off)
-                        stop_continuous_buzz()
+                        stop_blinking()
+                        if current_time - last_alert_time > BUZZ_GRACE_PERIOD:
+                            stop_continuous_buzz()
                         last_led_stop_time = current_time
             else:
                 driver_status = 'NoFace'
@@ -390,8 +401,9 @@ def main():
 
                 # Stop LED and continuous buzzer when no face (throttled)
                 if current_time - last_led_stop_time >= led_stop_interval:
-                    stop_blinking()  # Direct call
-                    stop_continuous_buzz()
+                    stop_blinking()
+                    if current_time - last_alert_time > BUZZ_GRACE_PERIOD:
+                        stop_continuous_buzz()
                     last_led_stop_time = current_time
 
             # Add frame to event buffer at throttled rate (2 FPS)
