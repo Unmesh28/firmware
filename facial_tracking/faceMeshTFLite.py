@@ -114,7 +114,7 @@ class FaceMesh:
     _LM_MODEL = 'face_landmark_192.tflite'
 
     # How often to re-run face detection (every N frames)
-    _DETECT_INTERVAL = int(os.getenv('DETECT_INTERVAL', '30'))
+    _DETECT_INTERVAL = int(os.getenv('DETECT_INTERVAL', '60'))
 
     # Margin around detection box for landmark crop (fraction of box size)
     _CROP_MARGIN = 0.35
