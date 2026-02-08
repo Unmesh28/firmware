@@ -375,15 +375,11 @@ def main():
     last_save_time = 0
     SAVE_IMAGE_INTERVAL = 1.0
 
-    # Detection resolution: half of capture to reduce preprocessing overhead
-    # MediaPipe resizes to fixed model input internally, so savings are in
-    # cvtColor + internal resize (~5-10ms). Main benefit: less memory pressure.
-    # Eye/lip ratios are scale-invariant, so accuracy is preserved.
-    DETECT_W = conf.FRAME_W // 2  # 320
-    DETECT_H = conf.FRAME_H // 2  # 240
+    # TFLite FaceMesh does its own face crop + resize internally.
+    # No need to downscale — full 640x480 gives better face crop quality.
 
     log_info(f"Starting facial tracking with event capture (detection FPS: {target_detection_fps}, buffer FPS: {target_buffer_fps})")
-    log_info(f"Capture: {conf.FRAME_W}x{conf.FRAME_H}, Detection: {DETECT_W}x{DETECT_H}, HEADLESS: {conf.HEADLESS}, refine_landmarks: {conf.REFINE_LANDMARKS}")
+    log_info(f"Capture: {conf.FRAME_W}x{conf.FRAME_H}, HEADLESS: {conf.HEADLESS}, refine_landmarks: {conf.REFINE_LANDMARKS}")
     log_info(f"Driver verification interval: {VERIFICATION_INTERVAL_SECONDS // 60} minutes")
 
     try:
@@ -430,13 +426,9 @@ def main():
                 time.sleep(0.01)
                 continue
 
-            # Downscale for detection: reduces cvtColor + internal resize overhead
-            # Eye/lip ratios are scale-invariant — identical detection accuracy
-            detect_frame = cv2.resize(frame, (DETECT_W, DETECT_H), interpolation=cv2.INTER_AREA)
-
             last_detection_time = current_time
             t_start = time.time()
-            facial_tracker.process_frame(detect_frame)
+            facial_tracker.process_frame(frame)
             t_process = time.time() - t_start
 
             # Log processing time every 30 frames to track actual FPS
