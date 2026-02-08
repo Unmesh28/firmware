@@ -193,13 +193,14 @@ _padding_y = 3
 _top_left = (15, 15)
 
 def save_image(frame, folder_path, speed, lat2, long2, driver_status):
-    """Save annotated image with driver status overlay and footer."""
+    """Save annotated image with driver status overlay and footer.
+    Filename includes metadata for upload_images.py parsing."""
     lat2 = round(float(lat2), 4)
     long2 = round(float(long2), 4)
     timestamp_obj = datetime.now()
     timestamp = timestamp_obj.strftime("%Y-%m-%d %H:%M:%S")
     filename_time = timestamp_obj.strftime("%Y%m%d_%H%M%S%f")
-    image_file = os.path.join(folder_path, f"{filename_time}.jpg")
+    image_file = os.path.join(folder_path, f"{filename_time}_{driver_status}_{lat2}_{long2}_{speed}.jpg")
 
     # Draw driver status box at top
     driver_text = f"Driver Status: {driver_status}"
@@ -313,8 +314,19 @@ def main():
     cached_long = '0.0'
     cached_acc = '0'
 
+    # Throttle save_image: max 1 per second, offloaded to background thread
+    # JPEG encode + SD card write takes 30-100ms — must NOT block detection loop
+    last_save_time = 0
+    SAVE_IMAGE_INTERVAL = 1.0
+
+    # Detection resolution: half of capture for ~3x faster MediaPipe inference
+    # Eye blink ratio = (top-bottom)/(left-right) — scale-invariant, accuracy preserved
+    # Lip open ratio = same — scale-invariant
+    DETECT_W = conf.FRAME_W // 2  # 320
+    DETECT_H = conf.FRAME_H // 2  # 240
+
     log_info(f"Starting facial tracking with event capture (detection FPS: {target_detection_fps}, buffer FPS: {target_buffer_fps})")
-    log_info(f"Resolution: {conf.FRAME_W}x{conf.FRAME_H}, HEADLESS: {conf.HEADLESS}, refine_landmarks: {conf.REFINE_LANDMARKS}")
+    log_info(f"Capture: {conf.FRAME_W}x{conf.FRAME_H}, Detection: {DETECT_W}x{DETECT_H}, HEADLESS: {conf.HEADLESS}, refine_landmarks: {conf.REFINE_LANDMARKS}")
     log_info(f"Driver verification interval: {VERIFICATION_INTERVAL_SECONDS // 60} minutes")
 
     try:
@@ -358,11 +370,14 @@ def main():
                 time.sleep(0.01)
                 continue
 
-            # Process frame for facial detection (no flip needed — MediaPipe
-            # detects faces in any orientation, flip only matters for display)
+            # Downscale for detection: 320x240 = 3x faster inference than 640x480
+            # Eye/lip ratios are scale-invariant — identical detection accuracy
+            # INTER_AREA is optimal for decimation (moire-free downscale)
+            detect_frame = cv2.resize(frame, (DETECT_W, DETECT_H), interpolation=cv2.INTER_AREA)
+
             last_detection_time = current_time
             t_start = time.time()
-            facial_tracker.process_frame(frame)
+            facial_tracker.process_frame(detect_frame)
             t_process = time.time() - t_start
 
             # Log processing time every 30 frames to track actual FPS
@@ -399,7 +414,12 @@ def main():
                         if _blink_thread is None or not _blink_thread.is_alive():
                             _blink_thread = threading.Thread(target=start_blinking, daemon=True)
                             _blink_thread.start()
-                    save_image(frame.copy(), folder_path, speed, lat, long2, driver_status)
+                    # Save annotated image (throttled 1/sec, background thread)
+                    if current_time - last_save_time >= SAVE_IMAGE_INTERVAL:
+                        last_save_time = current_time
+                        threading.Thread(target=save_image,
+                            args=(frame.copy(), folder_path, speed, lat, long2, driver_status),
+                            daemon=True).start()
 
                 elif facial_tracker.yawn_status == 'yawning':
                     driver_status = 'Yawning'
@@ -409,7 +429,11 @@ def main():
                         if _blink_thread is None or not _blink_thread.is_alive():
                             _blink_thread = threading.Thread(target=start_blinking, daemon=True)
                             _blink_thread.start()
-                    save_image(frame.copy(), folder_path, speed, lat, long2, driver_status)
+                    if current_time - last_save_time >= SAVE_IMAGE_INTERVAL:
+                        last_save_time = current_time
+                        threading.Thread(target=save_image,
+                            args=(frame.copy(), folder_path, speed, lat, long2, driver_status),
+                            daemon=True).start()
 
                 else:
                     driver_status = 'Active'
@@ -443,12 +467,11 @@ def main():
                     no_face_start_time = current_time  # Reset timer for next interval
 
             # Add frame to event buffer at throttled rate (2 FPS)
-            # Downscale to 320x240 before adding — reduces JPEG encoding time by ~4x
+            # Reuse detect_frame (already 320x240) — no extra resize needed
             if current_time - last_buffer_frame_time >= buffer_frame_interval:
                 last_buffer_frame_time = current_time
-                small_frame = cv2.resize(frame, (320, 240), interpolation=cv2.INTER_NEAREST)
                 event_buffer.add_frame(
-                    frame=small_frame,
+                    frame=detect_frame,
                     speed=speed,
                     lat=lat,
                     long=long2,
