@@ -144,7 +144,7 @@ class EventFrameBuffer:
             self.frame_buffer.append(frame_data)
 
             is_noface = driver_status in ['NoFace', 'No Face']
-            is_critical = driver_status in ['Sleeping', 'Yawning',
+            is_critical = driver_status in ['Sleeping', 'Yawning', 'Distracted',
                                             'Sleeping/Looking Down', 'Yawning/Fatigued']
 
             # Handle NoFace separately — 1 frame per minute

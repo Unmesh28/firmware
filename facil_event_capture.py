@@ -250,6 +250,7 @@ def map_driver_status(status):
         'Active': 'Active',
         'eye closed': 'Sleeping',
         'yawning': 'Yawning',
+        'Distracted': 'Distracted',
     }
     return status_map.get(status, status)
 
@@ -474,6 +475,18 @@ def main():
                     driver_status = 'Yawning'
                     start_continuous_buzz()   # Refreshes watchdog each frame
                     refresh_blinking()        # Refreshes LED watchdog each frame
+                    with _blink_thread_lock:
+                        if _blink_thread is None or not _blink_thread.is_alive():
+                            _blink_thread = threading.Thread(target=start_blinking, daemon=True)
+                            _blink_thread.start()
+                    if current_time - last_save_time >= SAVE_IMAGE_INTERVAL:
+                        last_save_time = current_time
+                        _enqueue_save_image(frame.copy(), folder_path, speed, lat, long2, driver_status)
+
+                elif facial_tracker.head_status:
+                    driver_status = 'Distracted'
+                    start_continuous_buzz()
+                    refresh_blinking()
                     with _blink_thread_lock:
                         if _blink_thread is None or not _blink_thread.is_alive():
                             _blink_thread = threading.Thread(target=start_blinking, daemon=True)

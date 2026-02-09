@@ -53,6 +53,36 @@ _NO_FACE_RESET = int(os.getenv('EYE_NO_FACE_RESET', '100'))  # ~10s
 # the open ratio unstable.  Skip yawn detection when span is too small.
 _MIN_MOUTH_SPAN_PX = int(os.getenv('MIN_MOUTH_SPAN_PX', '12'))
 
+# ── Head pose detection (distraction) ─────────────────────────────
+#
+# Uses nose position relative to face edges to estimate head direction.
+# Yaw: nose X offset from face center → looking left/right.
+# Pitch: nose-bridge to chin vs nose-bridge to forehead ratio → looking down.
+#
+# Key landmarks (MediaPipe FaceMesh 468-point):
+#   1 = nose tip, 6 = nose bridge, 10 = forehead, 152 = chin,
+#   234 = left face contour, 454 = right face contour.
+
+_NOSE_TIP = 1
+_NOSE_BRIDGE = 6
+_FOREHEAD = 10
+_CHIN = 152
+_LEFT_FACE = 234
+_RIGHT_FACE = 454
+
+# Yaw threshold: nose position as fraction of face width.
+# 0.5 = center.  Below threshold = looking right, above (1-threshold) = looking left.
+# 0.38 means ~24% off-center triggers.
+_YAW_THRESHOLD = float(os.getenv('HEAD_YAW_THRESHOLD', '0.38'))
+
+# Pitch threshold: ratio of (bridge-to-chin) / (forehead-to-chin).
+# ~0.5 = level.  Below threshold = looking down.
+_PITCH_DOWN_THRESHOLD = float(os.getenv('HEAD_PITCH_DOWN', '0.38'))
+
+# Frames of sustained distraction before alerting.
+# At 10 FPS: 15 frames = 1.5 seconds (ignores brief mirror glances).
+_FRAME_DISTRACTED = int(os.getenv('FRAME_DISTRACTED', '15'))
+
 
 class FacialTracker:
     """
@@ -72,6 +102,11 @@ class FacialTracker:
         self._open_frames = 0
         self._no_face_frames = 0
 
+        # Head pose distraction tracking
+        self._distracted_frames = 0
+        self._attentive_frames = 0
+        self._last_direction = ''
+
     def process_frame(self, frame):
         """Process the frame to analyze facial status."""
         self.detected = False
@@ -87,6 +122,7 @@ class FacialTracker:
                 self.lips = Lips(frame, face_landmarks, conf.LIPS)
                 self._check_eyes_status()
                 self._check_yawn_status()
+                self._check_head_pose(face_landmarks)
                 break
         else:
             self._no_face_frames += 1
@@ -95,6 +131,8 @@ class FacialTracker:
                 self._no_face_frames = 0
             self._closed_frames = 0
             self._open_frames = 0
+            self._distracted_frames = 0
+            self._attentive_frames = 0
 
     # ── Eye reliability + single-eye fallback ──────────────────────
 
@@ -181,6 +219,59 @@ class FacialTracker:
             return
         if self.lips.mouth_open():
             self.yawn_status = 'yawning'
+
+    # ── Head pose (distraction) ──────────────────────────────────
+
+    def _check_head_pose(self, face_landmarks):
+        """Detect if driver is looking down, left, or right.
+
+        Uses nose position relative to face boundary landmarks to estimate
+        head yaw (left/right) and pitch (down).  A frame counter with
+        hysteresis prevents brief mirror glances from triggering alerts.
+        """
+        self.head_status = ''
+
+        lm = face_landmarks.landmark
+        nose = lm[_NOSE_TIP]
+        bridge = lm[_NOSE_BRIDGE]
+        forehead = lm[_FOREHEAD]
+        chin = lm[_CHIN]
+        left = lm[_LEFT_FACE]
+        right = lm[_RIGHT_FACE]
+
+        direction = ''
+
+        # --- Yaw: looking left or right ---
+        face_w = right.x - left.x
+        if face_w > 0.01:
+            yaw_ratio = (nose.x - left.x) / face_w
+            if yaw_ratio < _YAW_THRESHOLD:
+                direction = 'looking right'
+            elif yaw_ratio > (1.0 - _YAW_THRESHOLD):
+                direction = 'looking left'
+
+        # --- Pitch: looking down (only if not already turned sideways) ---
+        if not direction:
+            upper = bridge.y - forehead.y
+            lower = chin.y - bridge.y
+            total = upper + lower
+            if total > 0.01:
+                pitch_ratio = lower / total
+                if pitch_ratio < _PITCH_DOWN_THRESHOLD:
+                    direction = 'looking down'
+
+        # Frame counter with 2-frame hysteresis
+        if direction:
+            self._distracted_frames += 1
+            self._attentive_frames = 0
+            self._last_direction = direction
+        else:
+            self._attentive_frames += 1
+            if self._attentive_frames > 2:
+                self._distracted_frames = 0
+
+        if self._distracted_frames > _FRAME_DISTRACTED:
+            self.head_status = self._last_direction
         
 
 def main():
