@@ -14,11 +14,11 @@ Environment=GPS_FORCE_GPSD=1
 Environment=MQTT_BROKER_HOST=api.copilotai.click
 Environment=MQTT_PUBLISH_INTERVAL=2.0
 
-Environment="PYTHONPATH=/home/pi/facial-tracker-firmware/src"
-WorkingDirectory=/home/pi/facial-tracker-firmware/src
+Environment="PYTHONPATH=/home/pi/facial-tracker-firmware"
+WorkingDirectory=/home/pi/facial-tracker-firmware
 
 ExecStart=/home/pi/facial-tracker-firmware/venv/bin/python \
-          /home/pi/facial-tracker-firmware/src/get_gps_data.py
+          /home/pi/facial-tracker-firmware/get_gps_data.py
 
 Restart=always
 RestartSec=3

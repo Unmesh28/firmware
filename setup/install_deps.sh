@@ -16,7 +16,6 @@ if [ "$(id -u)" -ne 0 ]; then
 fi
 
 FIRMWARE_DIR="/home/pi/facial-tracker-firmware"
-SRC_DIR="$FIRMWARE_DIR/src"
 VENV_DIR="$FIRMWARE_DIR/venv"
 
 echo "=== Installing Dependencies for Driver Monitoring ==="
@@ -91,8 +90,8 @@ mysql -u root -praspberry@123 -e "CREATE DATABASE IF NOT EXISTS car;" 2>/dev/nul
 mysql -u root -e "ALTER USER 'root'@'localhost' IDENTIFIED BY 'raspberry@123';" 2>/dev/null || true
 
 # Initialize schema if SQL file exists
-if [ -f "$SRC_DIR/init_database.sql" ]; then
-    mysql -u root -praspberry@123 car < "$SRC_DIR/init_database.sql" 2>/dev/null || true
+if [ -f "$FIRMWARE_DIR/init_database.sql" ]; then
+    mysql -u root -praspberry@123 car < "$FIRMWARE_DIR/init_database.sql" 2>/dev/null || true
     echo "  Database schema initialized."
 fi
 
@@ -115,9 +114,8 @@ echo "  Redis enabled and started."
 echo ""
 echo "[5/5] Creating directory structure..."
 
-# Models directory (symlinked for TFLite)
+# Models directory for TFLite
 mkdir -p "$FIRMWARE_DIR/models"
-[ ! -L "$SRC_DIR/models" ] && ln -sf "$FIRMWARE_DIR/models" "$SRC_DIR/models" || true
 
 # Images directories
 mkdir -p "$FIRMWARE_DIR/images/pending"
@@ -139,9 +137,9 @@ echo "  1. Download TFLite models to $FIRMWARE_DIR/models/"
 echo "     - face_detection_short.tflite (BlazeFace)"
 echo "     - face_landmark_192.tflite (468 landmarks)"
 echo "  2. Provision the device:"
-echo "     cd $SRC_DIR && $VENV_DIR/bin/python provisioning_ui.py"
+echo "     cd $FIRMWARE_DIR && $VENV_DIR/bin/python provisioning_ui.py"
 echo "  3. Deploy services (one at a time, test performance between each):"
-echo "     sudo cp $SRC_DIR/systemd/facial1.service /etc/systemd/system/"
+echo "     sudo cp $FIRMWARE_DIR/systemd/facial1.service /etc/systemd/system/"
 echo "     sudo systemctl daemon-reload && sudo systemctl enable --now facial1"
 echo "     journalctl -u facial1 -f"
 echo ""

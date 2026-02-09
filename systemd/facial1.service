@@ -8,10 +8,10 @@ Type=simple
 User=pi
 Group=pi
 
-WorkingDirectory=/home/pi/facial-tracker-firmware/src
+WorkingDirectory=/home/pi/facial-tracker-firmware
 
 Environment=PYTHONUNBUFFERED=1
-Environment="PYTHONPATH=/home/pi/facial-tracker-firmware/src"
+Environment="PYTHONPATH=/home/pi/facial-tracker-firmware"
 
 # TFLite mode (no MediaPipe on 32-bit armhf)
 Environment=HEADLESS=1
@@ -36,7 +36,7 @@ Environment="TF_NUM_INTRAOP_THREADS=2"
 Environment="TF_NUM_INTEROP_THREADS=1"
 
 ExecStart=/home/pi/facial-tracker-firmware/venv/bin/python \
-          /home/pi/facial-tracker-firmware/src/facil_event_capture.py
+          /home/pi/facial-tracker-firmware/facil_event_capture.py
 
 Restart=always
 RestartSec=5
