@@ -17,14 +17,13 @@ class FacialTracker:
         self.left_eye = None
         self.right_eye = None
         self.lips = None
-        self.left_eye_closed_frames = 0
-        self.right_eye_closed_frames = 0
-        self.detected = False  # Initialize the detected attribute
+        self.detected = False
 
-        # Allow 1 noisy "open" frame without resetting closed counter
-        # At ~10 FPS with CPU contention, single frames can misdetect
-        self.left_eye_gap_frames = 0
-        self.right_eye_gap_frames = 0
+        # Averaged eye ratio tracking — robust against asymmetric camera angles
+        # Instead of requiring both eyes independently below threshold,
+        # average L+R ratios which cancels out angle-induced asymmetry.
+        self._avg_closed_frames = 0
+        self._avg_gap_frames = 0
 
     def process_frame(self, frame):
         """Process the frame to analyze facial status."""
@@ -45,57 +44,32 @@ class FacialTracker:
     def _check_eyes_status(self):
         self.eyes_status = ''
 
-        # Diagnostic: log eye ratios every 30 frames for threshold calibration
+        # Average both eye ratios — cancels asymmetry from camera angle
+        avg_ratio = (self.left_eye.eye_veti_to_hori + self.right_eye.eye_veti_to_hori) / 2.0
+
+        # Diagnostic: log every 30 frames for threshold calibration
         if not hasattr(self, '_eye_log_count'):
             self._eye_log_count = 0
         self._eye_log_count += 1
         if self._eye_log_count % 30 == 0:
-            l_ratio = self.left_eye.eye_veti_to_hori
-            r_ratio = self.right_eye.eye_veti_to_hori
-            print(f"EYE_RATIO L={l_ratio:.3f} R={r_ratio:.3f} thresh={conf.EYE_CLOSED} L_closed_frames={self.left_eye_closed_frames} R_closed_frames={self.right_eye_closed_frames}")
+            print(f"EYE_AVG={avg_ratio:.3f} L={self.left_eye.eye_veti_to_hori:.3f} R={self.right_eye.eye_veti_to_hori:.3f} thresh={conf.EYE_CLOSED} closed_frames={self._avg_closed_frames}")
 
-        if self.left_eye.eye_closed():
-            self.left_eye_closed_frames += 1
-            self.left_eye_gap_frames = 0
+        if avg_ratio < conf.EYE_CLOSED:
+            self._avg_closed_frames += 1
+            self._avg_gap_frames = 0
         else:
-            self.left_eye_gap_frames += 1
-            if self.left_eye_gap_frames > 1:
-                self.left_eye_closed_frames = 0
-            if not conf.HEADLESS and self.left_eye.iris:
-                self.left_eye.iris.draw_iris(True)
+            # 1-frame hysteresis: single noisy "open" frame doesn't reset
+            self._avg_gap_frames += 1
+            if self._avg_gap_frames > 1:
+                self._avg_closed_frames = 0
 
-        if self.right_eye.eye_closed():
-            self.right_eye_closed_frames += 1
-            self.right_eye_gap_frames = 0
-        else:
-            self.right_eye_gap_frames += 1
-            if self.right_eye_gap_frames > 1:
-                self.right_eye_closed_frames = 0
-            if not conf.HEADLESS and self.right_eye.iris:
-                self.right_eye.iris.draw_iris(True)
-
-        if self._left_eye_closed() and self._right_eye_closed():
+        if self._avg_closed_frames > conf.FRAME_CLOSED:
             self.eyes_status = 'eye closed'
-            return
-
-        if not self.left_eye.eye_closed() and not self.right_eye.eye_closed():
-            if self.left_eye.gaze_right() and self.right_eye.gaze_right():
-                self.eyes_status = 'gazing right'
-            elif self.left_eye.gaze_left() and self.right_eye.gaze_left():
-                self.eyes_status = 'gazing left'
-            elif self.left_eye.gaze_center() and self.right_eye.gaze_center():
-                self.eyes_status = 'gazing center'
 
     def _check_yawn_status(self):
         self.yawn_status = ''
         if self.lips.mouth_open():
             self.yawn_status = 'yawning'
-
-    def _left_eye_closed(self, threshold=conf.FRAME_CLOSED):
-        return self.left_eye_closed_frames > threshold
-    
-    def _right_eye_closed(self, threshold=conf.FRAME_CLOSED):
-        return self.right_eye_closed_frames > threshold
         
 
 def main():

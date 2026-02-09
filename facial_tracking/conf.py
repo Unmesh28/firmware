@@ -28,9 +28,9 @@ LEFT_EYE   = [263, 362, 386, 374, 473, 474, 475, 476, 477]
 RIGHT_EYE  = [133,  33, 159, 145, 468, 469, 470, 471, 472]
 LIPS       = [291,  61,  13,  14]
 
-# Threshold (EYE_CLOSED: 0.22 works for TFLite at typical dashboard camera angles)
+# Threshold (EYE_CLOSED: averaged L+R ratio; 0.18 separates closed ~0.13 from open ~0.20)
 GAZE_LEFT  = 0.2
 GAZE_RIGHT = 0.8
-EYE_CLOSED = float(os.getenv('EYE_CLOSED', '0.22'))
+EYE_CLOSED = float(os.getenv('EYE_CLOSED', '0.18'))
 MOUTH_OPEN = float(os.getenv('MOUTH_OPEN', '0.35'))
 FRAME_CLOSED = int(os.getenv('FRAME_CLOSED', '6'))
