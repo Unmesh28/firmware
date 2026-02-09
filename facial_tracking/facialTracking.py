@@ -40,7 +40,6 @@ class FacialTracker:
         self._avg_gap_frames = 0
         self._eye_baseline = 0.0
         self._warmup_count = 0
-        self._eye_log_count = 0
 
     def process_frame(self, frame):
         """Process the frame to analyze facial status."""
@@ -87,11 +86,6 @@ class FacialTracker:
             # Slow EMA (alpha=0.02) — only update when eyes are open
             if avg_ratio >= threshold:
                 self._eye_baseline += 0.02 * (avg_ratio - self._eye_baseline)
-
-        # Diagnostic: log every 30 frames
-        self._eye_log_count += 1
-        if self._eye_log_count % 30 == 0:
-            print(f"EYE_AVG={avg_ratio:.3f} baseline={self._eye_baseline:.3f} thresh={threshold:.3f} closed={self._avg_closed_frames}")
 
         if avg_ratio < threshold:
             self._avg_closed_frames += 1
