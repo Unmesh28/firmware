@@ -1,10 +1,20 @@
 import cv2
+import os
 import time
 import facial_tracking.conf as conf
 
 from facial_tracking.faceMesh import FaceMesh
 from facial_tracking.eye import Eye
 from facial_tracking.lips import Lips
+
+
+# Adaptive eye close detection: eyes "closed" when avg ratio drops
+# below this fraction of the running "open" baseline.
+# 0.75 = closed when ratio is < 75% of normal open value.
+_EYE_CLOSE_RATIO = float(os.getenv('EYE_CLOSE_RATIO', '0.75'))
+
+# Warmup: frames to establish baseline (~3s at 10 FPS)
+_EYE_WARMUP = int(os.getenv('EYE_WARMUP', '30'))
 
 
 class FacialTracker:
@@ -19,11 +29,14 @@ class FacialTracker:
         self.lips = None
         self.detected = False
 
-        # Averaged eye ratio tracking — robust against asymmetric camera angles
-        # Instead of requiring both eyes independently below threshold,
-        # average L+R ratios which cancels out angle-induced asymmetry.
+        # Adaptive eye ratio tracking
+        # Averages L+R eye ratios (cancels camera-angle asymmetry),
+        # then compares to a running baseline that adapts to any mount position.
         self._avg_closed_frames = 0
         self._avg_gap_frames = 0
+        self._eye_baseline = 0.0
+        self._warmup_count = 0
+        self._eye_log_count = 0
 
     def process_frame(self, frame):
         """Process the frame to analyze facial status."""
@@ -47,14 +60,33 @@ class FacialTracker:
         # Average both eye ratios — cancels asymmetry from camera angle
         avg_ratio = (self.left_eye.eye_veti_to_hori + self.right_eye.eye_veti_to_hori) / 2.0
 
-        # Diagnostic: log every 30 frames for threshold calibration
-        if not hasattr(self, '_eye_log_count'):
-            self._eye_log_count = 0
+        # --- Adaptive baseline ---
+        # During warmup: fast convergence to establish "open" baseline.
+        # After warmup: slow tracking, only updated when eyes appear open.
+        # Threshold = baseline * CLOSE_RATIO (adapts to any camera angle).
+        if self._warmup_count < _EYE_WARMUP:
+            self._warmup_count += 1
+            if self._eye_baseline == 0:
+                self._eye_baseline = avg_ratio
+            else:
+                # Fast EMA (alpha=0.15) during warmup
+                self._eye_baseline += 0.15 * (avg_ratio - self._eye_baseline)
+            # Use fixed threshold during warmup (from conf / env var)
+            threshold = conf.EYE_CLOSED
+        else:
+            # Adaptive threshold: closed = below 75% of open baseline
+            threshold = self._eye_baseline * _EYE_CLOSE_RATIO
+            threshold = max(threshold, 0.06)  # safety floor
+            # Slow EMA (alpha=0.02) — only update when eyes are open
+            if avg_ratio >= threshold:
+                self._eye_baseline += 0.02 * (avg_ratio - self._eye_baseline)
+
+        # Diagnostic: log every 30 frames
         self._eye_log_count += 1
         if self._eye_log_count % 30 == 0:
-            print(f"EYE_AVG={avg_ratio:.3f} L={self.left_eye.eye_veti_to_hori:.3f} R={self.right_eye.eye_veti_to_hori:.3f} thresh={conf.EYE_CLOSED} closed_frames={self._avg_closed_frames}")
+            print(f"EYE_AVG={avg_ratio:.3f} baseline={self._eye_baseline:.3f} thresh={threshold:.3f} closed={self._avg_closed_frames}")
 
-        if avg_ratio < conf.EYE_CLOSED:
+        if avg_ratio < threshold:
             self._avg_closed_frames += 1
             self._avg_gap_frames = 0
         else:
