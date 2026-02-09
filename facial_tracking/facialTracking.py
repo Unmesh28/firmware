@@ -9,40 +9,49 @@ from facial_tracking.eye import Eye
 from facial_tracking.lips import Lips
 
 
-# Clamp per-eye ratios before averaging.  Real V/H maxes at ~0.35;
-# TFLite jitter can produce 0.85+ which corrupts any baseline.
+# ── Eye reliability ────────────────────────────────────────────────
+#
+# When the driver turns their head, the far eye's landmarks compress:
+# the horizontal span shrinks toward 0 or goes negative.  This produces
+# garbage blink ratios that poison the average → false sleeping triggers.
+#
+# Fix: measure each eye's horizontal span (px between corners).
+# If span < minimum, that eye is occluded → exclude it.
+# Use only the reliable eye(s) for detection.
+
+# Minimum horizontal span (pixels) for an eye to be trusted.
+# At 640px width a visible eye spans ~30-60px.  Below 15px the
+# landmarks are too compressed for a meaningful V/H ratio.
+_MIN_EYE_SPAN_PX = int(os.getenv('MIN_EYE_SPAN_PX', '15'))
+
+# Clamp individual eye ratios to [0, CAP].
+# Real V/H maxes at ~0.35; TFLite jitter can produce 0.85+.
+# Floor at 0 catches negative ratios from landmark noise.
 _EYE_RATIO_CAP = 0.35
 
 # ── Dual-mode eye-close detection ──────────────────────────────────
 #
-# Mode 1 — Absolute: avg_ratio below a hard floor = definitely closed
-#   regardless of camera angle.  Averaged closed-eye ratios are
-#   consistently 0.10-0.15 across all tested angles.
+# Mode 1 — Absolute: ratio below a hard floor = definitely closed
+#   regardless of camera angle.  Works from frame 1.
 #
-# Mode 2 — Relative: avg_ratio dropped significantly from the rolling
-#   upper-percentile of recent ratios (= "normal open" baseline).
-#   Adapts continuously to any camera angle; no fragile warmup period.
+# Mode 2 — Relative: ratio dropped below 75th-percentile of a rolling
+#   15-second window × factor.  Adapts continuously; no warmup.
 #
 # Either mode triggers the closed-frame counter.
 
 _ABSOLUTE_CLOSED = float(os.getenv('EYE_ABSOLUTE_CLOSED', '0.15'))
 
-# Rolling window: ~15 seconds of face data at 10 FPS
-_WINDOW_SIZE = int(os.getenv('EYE_WINDOW_SIZE', '150'))
-
-# Need at least this many samples before relative mode activates (~2s)
-_MIN_WINDOW_SAMPLES = 20
-
-# 75th percentile of window = robust "eyes open" estimate
-# (naturally filters out blinks & brief closures in the window)
+_WINDOW_SIZE = int(os.getenv('EYE_WINDOW_SIZE', '150'))  # ~15s at 10 FPS
+_MIN_WINDOW_SAMPLES = 20                                   # ~2s
 _BASELINE_PERCENTILE = 0.75
-
-# Eyes closed when ratio < baseline * this factor
 _RELATIVE_FACTOR = float(os.getenv('EYE_RELATIVE_FACTOR', '0.75'))
 
-# If face is lost for this many frames, clear stale baseline
-# (driver may have moved camera / changed seating position)
 _NO_FACE_RESET = int(os.getenv('EYE_NO_FACE_RESET', '100'))  # ~10s
+
+# ── Mouth reliability ──────────────────────────────────────────────
+# Same issue: when head turns, mouth horizontal span shrinks, making
+# the open ratio unstable.  Skip yawn detection when span is too small.
+_MIN_MOUTH_SPAN_PX = int(os.getenv('MIN_MOUTH_SPAN_PX', '12'))
 
 
 class FacialTracker:
@@ -57,7 +66,7 @@ class FacialTracker:
         self.lips = None
         self.detected = False
 
-        # Rolling window of averaged eye ratios for adaptive baseline
+        # Rolling window of reliable eye ratios for adaptive baseline
         self._ratio_window = deque(maxlen=_WINDOW_SIZE)
         self._closed_frames = 0
         self._open_frames = 0
@@ -81,19 +90,58 @@ class FacialTracker:
                 break
         else:
             self._no_face_frames += 1
-            # Face lost for extended period — clear stale baseline
             if self._no_face_frames >= _NO_FACE_RESET:
                 self._ratio_window.clear()
                 self._no_face_frames = 0
             self._closed_frames = 0
             self._open_frames = 0
 
+    # ── Eye reliability + single-eye fallback ──────────────────────
+
+    def _get_reliable_eye_ratio(self):
+        """Return blink ratio using only eyes with sufficient landmark span.
+
+        When the driver turns their head, the far eye's corner landmarks
+        compress together (small or negative horizontal span).  We detect
+        this and exclude that eye, falling back to single-eye detection.
+
+        Returns the ratio, or None if no eye is reliable this frame.
+        """
+        # Horizontal span = distance between eye corners (pixels).
+        # pos[0] = outer corner, pos[1] = inner corner (from conf landmark IDs).
+        l_span = self.left_eye.pos[0][0] - self.left_eye.pos[1][0]
+        r_span = self.right_eye.pos[0][0] - self.right_eye.pos[1][0]
+
+        l_ok = l_span >= _MIN_EYE_SPAN_PX
+        r_ok = r_span >= _MIN_EYE_SPAN_PX
+
+        if l_ok and r_ok:
+            # Both eyes visible — average cancels mild angle asymmetry
+            l_r = max(0.0, min(self.left_eye.eye_veti_to_hori, _EYE_RATIO_CAP))
+            r_r = max(0.0, min(self.right_eye.eye_veti_to_hori, _EYE_RATIO_CAP))
+            return (l_r + r_r) / 2.0
+        elif l_ok:
+            # Only left eye reliable (head turned right)
+            return max(0.0, min(self.left_eye.eye_veti_to_hori, _EYE_RATIO_CAP))
+        elif r_ok:
+            # Only right eye reliable (head turned left)
+            return max(0.0, min(self.right_eye.eye_veti_to_hori, _EYE_RATIO_CAP))
+        else:
+            # Neither eye reliable — extreme angle or bad frame
+            return None
+
     def _check_eyes_status(self):
         self.eyes_status = ''
 
-        l_ratio = min(self.left_eye.eye_veti_to_hori, _EYE_RATIO_CAP)
-        r_ratio = min(self.right_eye.eye_veti_to_hori, _EYE_RATIO_CAP)
-        avg_ratio = (l_ratio + r_ratio) / 2.0
+        avg_ratio = self._get_reliable_eye_ratio()
+
+        if avg_ratio is None:
+            # No reliable eye data — treat as inconclusive.
+            # Increment open counter (conservative: assume awake).
+            self._open_frames += 1
+            if self._open_frames > 2:
+                self._closed_frames = 0
+            return
 
         self._ratio_window.append(avg_ratio)
 
@@ -109,7 +157,6 @@ class FacialTracker:
             sorted_vals = sorted(self._ratio_window)
             baseline = sorted_vals[int(len(sorted_vals) * _BASELINE_PERCENTILE)]
             relative_thresh = baseline * _RELATIVE_FACTOR
-            # Only use relative when it's stricter than absolute
             if relative_thresh > _ABSOLUTE_CLOSED and avg_ratio < relative_thresh:
                 is_closed = True
 
@@ -127,6 +174,11 @@ class FacialTracker:
 
     def _check_yawn_status(self):
         self.yawn_status = ''
+        # Guard: when head is turned, mouth horizontal span shrinks,
+        # making the open ratio unstable / infinite.  Skip detection.
+        mouth_span = self.lips.pos[0][0] - self.lips.pos[1][0]
+        if abs(mouth_span) < _MIN_MOUTH_SPAN_PX:
+            return
         if self.lips.mouth_open():
             self.yawn_status = 'yawning'
         
