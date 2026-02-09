@@ -8,10 +8,14 @@ from facial_tracking.eye import Eye
 from facial_tracking.lips import Lips
 
 
+# Clamp per-eye ratios before averaging. Real eye V/H ratio maxes at ~0.35.
+# TFLite landmarks can jitter to 0.85+ which inflates the adaptive baseline.
+_EYE_RATIO_CAP = 0.35
+
 # Adaptive eye close detection: eyes "closed" when avg ratio drops
 # below this fraction of the running "open" baseline.
-# 0.75 = closed when ratio is < 75% of normal open value.
-_EYE_CLOSE_RATIO = float(os.getenv('EYE_CLOSE_RATIO', '0.75'))
+# 0.65 = closed when ratio drops to < 65% of normal open value.
+_EYE_CLOSE_RATIO = float(os.getenv('EYE_CLOSE_RATIO', '0.65'))
 
 # Warmup: frames to establish baseline (~3s at 10 FPS)
 _EYE_WARMUP = int(os.getenv('EYE_WARMUP', '30'))
@@ -57,8 +61,11 @@ class FacialTracker:
     def _check_eyes_status(self):
         self.eyes_status = ''
 
-        # Average both eye ratios — cancels asymmetry from camera angle
-        avg_ratio = (self.left_eye.eye_veti_to_hori + self.right_eye.eye_veti_to_hori) / 2.0
+        # Clamp per-eye ratios to reject landmark jitter outliers.
+        # Real eye V/H ratio is 0.05-0.35; values like 0.85 are noise.
+        l_ratio = min(self.left_eye.eye_veti_to_hori, _EYE_RATIO_CAP)
+        r_ratio = min(self.right_eye.eye_veti_to_hori, _EYE_RATIO_CAP)
+        avg_ratio = (l_ratio + r_ratio) / 2.0
 
         # --- Adaptive baseline ---
         # During warmup: fast convergence to establish "open" baseline.
@@ -74,7 +81,7 @@ class FacialTracker:
             # Use fixed threshold during warmup (from conf / env var)
             threshold = conf.EYE_CLOSED
         else:
-            # Adaptive threshold: closed = below 75% of open baseline
+            # Adaptive threshold: closed = below 65% of open baseline
             threshold = self._eye_baseline * _EYE_CLOSE_RATIO
             threshold = max(threshold, 0.06)  # safety floor
             # Slow EMA (alpha=0.02) — only update when eyes are open
