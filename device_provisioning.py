@@ -208,7 +208,7 @@ def get_device_credentials():
 
 
 def delete_device_credentials():
-    """Delete device credentials from database (for re-provisioning)"""
+    """Delete device credentials and all data from database (full reset for re-provisioning)"""
     try:
         db_helper.execute_commit("DELETE FROM device")
         logger.info("Deleted device records")
@@ -218,6 +218,18 @@ def delete_device_credentials():
             logger.info("Deleted user_info records")
         except Exception as e:
             logger.warning(f"Could not delete user_info records: {e}")
+
+        try:
+            db_helper.execute_commit("DELETE FROM gps_data")
+            logger.info("Deleted gps_data records")
+        except Exception as e:
+            logger.warning(f"Could not delete gps_data records: {e}")
+
+        try:
+            db_helper.execute_commit("DELETE FROM car_data")
+            logger.info("Deleted car_data records")
+        except Exception as e:
+            logger.warning(f"Could not delete car_data records: {e}")
 
         # Cleanup images folder
         import shutil
@@ -234,7 +246,7 @@ def delete_device_credentials():
             except Exception as e:
                 logger.warning(f"Could not cleanup images folder: {e}")
 
-        logger.info("Device credentials deleted successfully")
+        logger.info("Device credentials and all data deleted successfully")
         return True
     except Exception as e:
         logger.error(f"Error deleting credentials: {e}")
