@@ -36,6 +36,9 @@ import os
 import subprocess
 import sys
 import time
+
+# Add repo root to path so we can import db_helper
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), ".."))
 import hashlib
 import shutil
 import tarfile
