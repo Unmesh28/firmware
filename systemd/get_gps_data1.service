@@ -10,7 +10,7 @@ Group=pi
 
 # GPS / MQTT config
 Environment=GPS_DEBUG_LOG_RAW=0
-Environment=GPS_FORCE_GPSD=1
+Environment=GPS_FORCE_GPSD=0
 Environment=MQTT_BROKER_HOST=api.copilotai.click
 Environment=MQTT_PUBLISH_INTERVAL=2.0
 Environment="DB_PATH=/home/pi/facial-tracker-firmware/data/blinksmart.db"

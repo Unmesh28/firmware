@@ -6,7 +6,7 @@
 #
 # What this does:
 #   1. Overclock CPU to 1200MHz (safe with heatsink, ~20% faster inference)
-#   2. Set gpu_mem=16 (frees 48MB RAM — no GPU needed for headless ML)
+#   2. Set gpu_mem=64 (minimum for camera ISP — below 64 breaks capture)
 #   3. Replace SD card swap with ZRAM (fast compressed RAM swap)
 #   4. Lock CPU governor to 'performance' (no clock ramping delays)
 #   5. Mount /tmp and /var/log on tmpfs (eliminates SD card I/O stalls)
@@ -201,12 +201,12 @@ echo "[6/6] Disabling unnecessary system services"
 
 # Services that waste CPU/RAM on a headless embedded device
 DISABLE_SERVICES=(
-    avahi-daemon          # mDNS — not needed for direct IP access
     bluetooth             # No Bluetooth needed
     hciuart               # Bluetooth UART
     triggerhappy          # Hotkey daemon — no keyboard
     ModemManager          # No cellular modem
-    wpa_supplicant        # Only if using NetworkManager instead
+    # NOTE: Do NOT disable wpa_supplicant (breaks WiFi)
+    # NOTE: Do NOT disable avahi-daemon if using blinksmart.local for SSH
 )
 
 for svc in "${DISABLE_SERVICES[@]}"; do
@@ -216,6 +216,13 @@ for svc in "${DISABLE_SERVICES[@]}"; do
         echo "  Disabled: $svc"
     fi
 done
+
+# Also disable apt auto-update timers (waste I/O and bandwidth)
+for timer in man-db.timer apt-daily.timer apt-daily-upgrade.timer; do
+    systemctl disable "$timer" 2>/dev/null || true
+    systemctl stop "$timer" 2>/dev/null || true
+done
+echo "  Disabled: apt-daily timers"
 
 # ─────────────────────────────────────────────
 # SUMMARY
