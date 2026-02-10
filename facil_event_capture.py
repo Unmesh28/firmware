@@ -489,12 +489,13 @@ def main():
                 # Calculate how long NoFace has persisted
                 no_face_duration = current_time - no_face_start_time
 
-                # Buzz every 2 seconds continuously while NoFace persists
-                if no_face_duration >= NO_FACE_THRESHOLD:
-                    buzz_for(BUZZER_DURATION)  # Self-limiting: runs for duration then stops
-                    no_face_buzzer_triggered = True
-                    log_info(f"NoFace detected for {no_face_duration:.1f}s - buzzer activated")
-                    no_face_start_time = current_time  # Reset timer for next interval
+                # TODO: NoFace buzzer temporarily disabled for testing
+                # # Buzz every 2 seconds continuously while NoFace persists
+                # if no_face_duration >= NO_FACE_THRESHOLD:
+                #     buzz_for(BUZZER_DURATION)  # Self-limiting: runs for duration then stops
+                #     no_face_buzzer_triggered = True
+                #     log_info(f"NoFace detected for {no_face_duration:.1f}s - buzzer activated")
+                #     no_face_start_time = current_time  # Reset timer for next interval
 
             # Add full-res frame to event buffer at throttled rate (2 FPS)
             # Uses 640x480 for image quality; raw bytes stored, JPEG encoding in save worker
