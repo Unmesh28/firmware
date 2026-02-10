@@ -1,6 +1,6 @@
 [Unit]
 Description=OTA Startup Service - Check for updates on boot
-After=network-online.target mariadb.service
+After=network-online.target
 Wants=network-online.target
 Before=facial1.service get_gps_data1.service
 
