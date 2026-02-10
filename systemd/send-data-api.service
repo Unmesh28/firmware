@@ -1,24 +1,23 @@
 [Unit]
 Description=Send GPS/Telemetry Data to API Service
-After=network-online.target ota-startup.service
+After=network-online.target
 Wants=network-online.target
-Requires=ota-startup.service
 
 [Service]
 Type=simple
 User=pi
 Group=pi
 
-WorkingDirectory=/home/pi/facial-tracker-firmware/current/apps
+WorkingDirectory=/home/pi/facial-tracker-firmware
 
 Environment=PYTHONUNBUFFERED=1
-Environment="PYTHONPATH=/home/pi/facial-tracker-firmware/current/apps:/home/pi/facial-tracker-firmware/current/libs"
+Environment="PYTHONPATH=/home/pi/facial-tracker-firmware"
 
 Environment=SEND_DATA_POLL_INTERVAL=30
 Environment="DB_PATH=/home/pi/facial-tracker-firmware/data/blinksmart.db"
 
 ExecStart=/home/pi/facial-tracker-firmware/venv/bin/python \
-          /home/pi/facial-tracker-firmware/current/apps/send_last_second_data.py
+          /home/pi/facial-tracker-firmware/send_last_second_data.py
 
 Restart=always
 RestartSec=5
