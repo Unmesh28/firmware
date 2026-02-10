@@ -42,6 +42,8 @@ sed -i '/^arm_freq=/d' "$CONFIG"
 sed -i '/^over_voltage=/d' "$CONFIG"
 sed -i '/^core_freq=/d' "$CONFIG"
 sed -i '/^gpu_mem=/d' "$CONFIG"
+sed -i '/^start_x=/d' "$CONFIG"
+sed -i '/^camera_auto_detect=/d' "$CONFIG"
 sed -i '/^#.*pi_optimize/d' "$CONFIG"
 
 # Append our settings
@@ -52,8 +54,11 @@ arm_freq=1200
 over_voltage=2
 core_freq=500
 gpu_mem=64
-# Camera ISP needs minimum 64MB — below this, V4L2/libcamera capture is unreliable
-# Do NOT set gpu_mem below 64 when using a camera module
+start_x=1
+camera_auto_detect=0
+# start_x=1 enables legacy camera stack (V4L2) needed by OpenCV VideoCapture
+# camera_auto_detect=0 disables libcamera so legacy stack takes over
+# gpu_mem=64 is minimum for camera ISP — below this, capture is unreliable
 temp_soft_limit=80
 force_turbo=0
 BOOT_EOF
