@@ -51,11 +51,15 @@ cat >> "$CONFIG" << 'BOOT_EOF'
 arm_freq=1200
 over_voltage=2
 core_freq=500
-gpu_mem=16
+gpu_mem=64
+# Camera ISP needs minimum 64MB — below this, V4L2/libcamera capture is unreliable
+# Do NOT set gpu_mem below 64 when using a camera module
+temp_soft_limit=80
+force_turbo=0
 BOOT_EOF
 
-echo "  arm_freq=1200 (20% overclock, stable with heatsink)"
-echo "  gpu_mem=16 (frees 48MB RAM for ML)"
+echo "  arm_freq=1200 (20% overclock, stable with active fan cooling)"
+echo "  gpu_mem=64 (minimum for camera ISP — below 64 breaks capture)"
 REBOOT_NEEDED=1
 
 # ─────────────────────────────────────────────
@@ -221,7 +225,7 @@ echo "=== Optimization Complete ==="
 echo ""
 echo "Changes applied:"
 echo "  [x] CPU overclock: 1000MHz → 1200MHz (+20%)"
-echo "  [x] GPU memory: 64MB → 16MB (frees 48MB for ML)"
+echo "  [x] GPU memory: kept at 64MB (minimum for camera ISP)"
 echo "  [x] ZRAM swap: 256MB LZ4 (replaces slow SD card swap)"
 echo "  [x] CPU governor: performance (no clock ramping)"
 echo "  [x] tmpfs: /tmp (32MB) + /var/log (16MB) on RAM"
