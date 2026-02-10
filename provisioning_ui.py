@@ -1198,7 +1198,7 @@ def get_delete_password():
                 print(f"[DEBUG] get_delete_password: Error reading {env_file}: {e}")
     
     # Fallback to environment variable
-    env_val = os.getenv("DELETE_DEVICE_PASSWORD", "admin123")
+    env_val = os.getenv("DELETE_DEVICE_PASSWORD", "Sapience@2128")
     print(f"[DEBUG] get_delete_password: Using os.getenv: {env_val}")
     return env_val
 
