@@ -251,6 +251,8 @@ def map_driver_status(status):
         'eye closed': 'Sleeping',
         'yawning': 'Yawning',
         'Distracted': 'Distracted',
+        'Looking Away': 'Distracted',
+        'Looking Down': 'Distracted',
     }
     return status_map.get(status, status)
 

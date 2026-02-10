@@ -29,24 +29,12 @@ _MIN_EYE_SPAN_PX = int(os.getenv('MIN_EYE_SPAN_PX', '15'))
 # Floor at 0 catches negative ratios from landmark noise.
 _EYE_RATIO_CAP = 0.35
 
-# ── Dual-mode eye-close detection ──────────────────────────────────
+# ── Fixed eye-close threshold ──────────────────────────────────────
 #
-# Mode 1 — Absolute: ratio below a hard floor = definitely closed
-#   regardless of camera angle.  Works from frame 1.
-#
-# Mode 2 — Relative: ratio dropped below 75th-percentile of a rolling
-#   15-second window × factor.  Adapts continuously; no warmup.
-#
-# Either mode triggers the closed-frame counter.
-
+# No calibration.  Below this ratio = eyes are closed.
+# Works for any person at any camera angle.
+# Open eyes: 0.19-0.40.  Closed: 0.08-0.15.  Threshold at 0.15.
 _ABSOLUTE_CLOSED = float(os.getenv('EYE_ABSOLUTE_CLOSED', '0.15'))
-
-_WINDOW_SIZE = int(os.getenv('EYE_WINDOW_SIZE', '150'))  # ~15s at 10 FPS
-_MIN_WINDOW_SAMPLES = 20                                   # ~2s
-_BASELINE_PERCENTILE = 0.75
-_RELATIVE_FACTOR = float(os.getenv('EYE_RELATIVE_FACTOR', '0.75'))
-
-_NO_FACE_RESET = int(os.getenv('EYE_NO_FACE_RESET', '100'))  # ~10s
 
 # ── Mouth reliability ──────────────────────────────────────────────
 # Same issue: when head turns, mouth horizontal span shrinks, making
@@ -56,8 +44,15 @@ _MIN_MOUTH_SPAN_PX = int(os.getenv('MIN_MOUTH_SPAN_PX', '12'))
 # ── Head pose detection (distraction) ─────────────────────────────
 #
 # Uses nose position relative to face edges to estimate head direction.
-# Yaw: nose X offset from face center → looking left/right.
-# Pitch: nose-bridge to chin vs nose-bridge to forehead ratio → looking down.
+#
+# Yaw: Rolling median of nose position = driver's normal position (road).
+#   Significant deviation from median = looking away (left/right).
+#   Self-calibrating: adapts to any camera mounting position without
+#   requiring initial calibration.  The median continuously tracks the
+#   driver's most common head direction.
+#
+# Pitch: nose-bridge to chin vs forehead to chin ratio → looking down.
+#   Uses fixed threshold (geometric ratio is camera-angle-independent).
 #
 # Key landmarks (MediaPipe FaceMesh 468-point):
 #   1 = nose tip, 6 = nose bridge, 10 = forehead, 152 = chin,
@@ -70,10 +65,17 @@ _CHIN = 152
 _LEFT_FACE = 234
 _RIGHT_FACE = 454
 
-# Yaw threshold: nose position as fraction of face width.
-# 0.5 = center.  Below threshold = looking right, above (1-threshold) = looking left.
-# 0.38 means ~24% off-center triggers.
-_YAW_THRESHOLD = float(os.getenv('HEAD_YAW_THRESHOLD', '0.38'))
+# Yaw: rolling median deviation approach.
+# Window of yaw samples.  At 10 FPS, 300 = ~30 seconds.
+_YAW_WINDOW = int(os.getenv('YAW_WINDOW', '300'))
+
+# Minimum samples before yaw detection activates (~3s at 10 FPS).
+# Until then, skip yaw detection entirely (no false triggers on startup).
+_YAW_MIN_SAMPLES = int(os.getenv('YAW_MIN_SAMPLES', '30'))
+
+# Deviation from median to count as "looking away".
+# 0.15 = ~15% of face width, roughly a 25-30° head turn from normal.
+_YAW_DEVIATION = float(os.getenv('YAW_DEVIATION', '0.15'))
 
 # Pitch threshold: ratio of (bridge-to-chin) / (forehead-to-chin).
 # ~0.5 = level.  Below threshold = looking down.
@@ -82,6 +84,10 @@ _PITCH_DOWN_THRESHOLD = float(os.getenv('HEAD_PITCH_DOWN', '0.38'))
 # Frames of sustained distraction before alerting.
 # At 10 FPS: 15 frames = 1.5 seconds (ignores brief mirror glances).
 _FRAME_DISTRACTED = int(os.getenv('FRAME_DISTRACTED', '15'))
+
+# Clear yaw baseline after this many consecutive no-face frames (~10s).
+# Prevents stale baseline if driver leaves or camera position changes.
+_NO_FACE_RESET = int(os.getenv('NO_FACE_RESET', '100'))
 
 
 class FacialTracker:
@@ -96,16 +102,16 @@ class FacialTracker:
         self.lips = None
         self.detected = False
 
-        # Rolling window of reliable eye ratios for adaptive baseline
-        self._ratio_window = deque(maxlen=_WINDOW_SIZE)
+        # Eye state (fixed threshold, no calibration)
         self._closed_frames = 0
         self._open_frames = 0
-        self._no_face_frames = 0
 
         # Head pose distraction tracking
+        self._yaw_window = deque(maxlen=_YAW_WINDOW)
         self._distracted_frames = 0
         self._attentive_frames = 0
         self._last_direction = ''
+        self._no_face_frames = 0
 
     def process_frame(self, frame):
         """Process the frame to analyze facial status."""
@@ -127,7 +133,7 @@ class FacialTracker:
         else:
             self._no_face_frames += 1
             if self._no_face_frames >= _NO_FACE_RESET:
-                self._ratio_window.clear()
+                self._yaw_window.clear()
                 self._no_face_frames = 0
             self._closed_frames = 0
             self._open_frames = 0
@@ -181,22 +187,8 @@ class FacialTracker:
                 self._closed_frames = 0
             return
 
-        self._ratio_window.append(avg_ratio)
-
-        # ── Dual-mode closed detection ──
-        is_closed = False
-
-        # Mode 1: Absolute — below hard floor = definitely closed
-        if avg_ratio < _ABSOLUTE_CLOSED:
-            is_closed = True
-
-        # Mode 2: Relative — significant drop from rolling baseline
-        if not is_closed and len(self._ratio_window) >= _MIN_WINDOW_SAMPLES:
-            sorted_vals = sorted(self._ratio_window)
-            baseline = sorted_vals[int(len(sorted_vals) * _BASELINE_PERCENTILE)]
-            relative_thresh = baseline * _RELATIVE_FACTOR
-            if relative_thresh > _ABSOLUTE_CLOSED and avg_ratio < relative_thresh:
-                is_closed = True
+        # Fixed threshold — no calibration, works for any person
+        is_closed = avg_ratio < _ABSOLUTE_CLOSED
 
         # Frame counter with 2-frame hysteresis (survives TFLite jitter)
         if is_closed:
@@ -223,11 +215,15 @@ class FacialTracker:
     # ── Head pose (distraction) ──────────────────────────────────
 
     def _check_head_pose(self, face_landmarks):
-        """Detect if driver is looking down, left, or right.
+        """Detect if driver is looking away or looking down.
 
-        Uses nose position relative to face boundary landmarks to estimate
-        head yaw (left/right) and pitch (down).  A frame counter with
-        hysteresis prevents brief mirror glances from triggering alerts.
+        Yaw uses a rolling median of the nose position within the face.
+        The median represents the driver's normal head position (looking at
+        the road).  Any significant deviation = looking away.  This
+        self-calibrates to any camera mounting position (left or right side
+        of windshield) without requiring initial calibration.
+
+        Pitch uses a fixed geometric ratio (camera-position-independent).
         """
         self.head_status = ''
 
@@ -241,16 +237,21 @@ class FacialTracker:
 
         direction = ''
 
-        # --- Yaw: looking left or right ---
+        # --- Yaw: deviation from rolling median ---
         face_w = right.x - left.x
         if face_w > 0.01:
             yaw_ratio = (nose.x - left.x) / face_w
-            if yaw_ratio < _YAW_THRESHOLD:
-                direction = 'looking right'
-            elif yaw_ratio > (1.0 - _YAW_THRESHOLD):
-                direction = 'looking left'
+            self._yaw_window.append(yaw_ratio)
 
-        # --- Pitch: looking down (only if not already turned sideways) ---
+            # Only detect after enough samples to establish baseline
+            if len(self._yaw_window) >= _YAW_MIN_SAMPLES:
+                sorted_yaw = sorted(self._yaw_window)
+                median_yaw = sorted_yaw[len(sorted_yaw) // 2]
+
+                if abs(yaw_ratio - median_yaw) > _YAW_DEVIATION:
+                    direction = 'looking away'
+
+        # --- Pitch: looking down (only if not already flagged by yaw) ---
         if not direction:
             upper = bridge.y - forehead.y
             lower = chin.y - bridge.y
@@ -272,7 +273,7 @@ class FacialTracker:
 
         if self._distracted_frames > _FRAME_DISTRACTED:
             self.head_status = self._last_direction
-        
+
 
 def main():
     cap = cv2.VideoCapture(conf.CAM_ID)
@@ -287,7 +288,7 @@ def main():
         if not success:
             #print("Ignoring empty camera frame.")
             continue
-        
+
         facial_tracker.process_frame(frame)
 
         ctime = time.time()
@@ -296,7 +297,7 @@ def main():
 
         frame = cv2.flip(frame, 1)
         cv2.putText(frame, f'FPS: {int(fps)}', (30, 30), 0, 0.6, conf.TEXT_COLOR, 1, lineType=cv2.LINE_AA)
-        
+
         if facial_tracker.detected:
             cv2.putText(frame, f'{facial_tracker.eyes_status}', (30, 70), 0, 0.8, conf.WARN_COLOR, 2, lineType=cv2.LINE_AA)
             cv2.putText(frame, f'{facial_tracker.yawn_status}', (30, 110), 0, 0.8, conf.WARN_COLOR, 2, lineType=cv2.LINE_AA)
@@ -311,4 +312,3 @@ def main():
 
 if __name__ == '__main__':
     main()
-

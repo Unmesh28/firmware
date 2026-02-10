@@ -24,10 +24,12 @@ Environment=MIN_TRACKING_CONFIDENCE=0.5
 Environment=FACE_MODEL_DIR=/home/pi/facial-tracker-firmware/models
 Environment=MOUTH_OPEN=0.35
 Environment=DETECT_INTERVAL=60
-# Dual-mode eye close detection (absolute + rolling percentile)
+# Eye close detection (fixed threshold, no calibration)
 Environment=EYE_ABSOLUTE_CLOSED=0.15
-Environment=EYE_RELATIVE_FACTOR=0.75
 Environment=FRAME_CLOSED=6
+# Head pose: yaw uses rolling median deviation (self-calibrating)
+Environment=YAW_DEVIATION=0.15
+Environment=FRAME_DISTRACTED=15
 
 # Optimize Python for production
 Environment="PYTHONOPTIMIZE=2"
