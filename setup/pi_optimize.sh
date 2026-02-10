@@ -155,8 +155,8 @@ cp "$FSTAB" "${FSTAB}.backup.$(date +%Y%m%d)" 2>/dev/null || true
 
 # Add tmpfs entries if not already present
 if ! grep -q 'tmpfs.*/tmp' "$FSTAB"; then
-    echo 'tmpfs /tmp tmpfs defaults,noatime,nosuid,size=32m 0 0' >> "$FSTAB"
-    echo "  Added /tmp tmpfs (32MB)"
+    echo 'tmpfs /tmp tmpfs defaults,noatime,nosuid,size=64m 0 0' >> "$FSTAB"
+    echo "  Added /tmp tmpfs (64MB)"
 fi
 
 if ! grep -q 'tmpfs.*/var/log' "$FSTAB"; then
@@ -235,7 +235,7 @@ echo "  [x] CPU overclock: 1000MHz → 1200MHz (+20%)"
 echo "  [x] GPU memory: kept at 64MB (minimum for camera ISP)"
 echo "  [x] ZRAM swap: 256MB LZ4 (replaces slow SD card swap)"
 echo "  [x] CPU governor: performance (no clock ramping)"
-echo "  [x] tmpfs: /tmp (32MB) + /var/log (16MB) on RAM"
+echo "  [x] tmpfs: /tmp (64MB) + /var/log (16MB) on RAM"
 echo "  [x] Kernel: tuned vm.swappiness, dirty ratios"
 echo "  [x] Disabled unused services (bluetooth, avahi, etc.)"
 echo ""
