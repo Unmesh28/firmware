@@ -4,6 +4,8 @@ import db_helper
 # Default configuration values
 DEFAULT_CONFIG = {
     'speed': '20',  # Activation speed threshold (km/h)
+    'gps_retention_days': '30',  # GPS data retention in active days
+    'image_retention_days': '15',  # Image retention in days
 }
 
 

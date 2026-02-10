@@ -260,6 +260,23 @@ HTML_TEMPLATE = '''
                 <div id="speedMessage" class="msg" style="display:none;"></div>
             </div>
             
+            <!-- Data Retention Settings -->
+            <div class="card" style="margin-top:12px; border: 1px solid #fab005;">
+                <h2>Data Retention</h2>
+                <p style="font-size:0.75em; color:#888; margin-bottom:10px;">Auto-delete old GPS data and images after specified active days. Requires password.</p>
+                <div style="display:flex; gap:10px; align-items:center; margin-bottom:8px;">
+                    <label style="font-size:0.85em; width:110px;">GPS Data (days)</label>
+                    <input type="number" id="gpsRetention" min="1" max="365" style="flex:1;" placeholder="30">
+                </div>
+                <div style="display:flex; gap:10px; align-items:center; margin-bottom:8px;">
+                    <label style="font-size:0.85em; width:110px;">Images (days)</label>
+                    <input type="number" id="imageRetention" min="1" max="365" style="flex:1;" placeholder="15">
+                </div>
+                <input type="password" id="retentionPassword" placeholder="Password to save" style="margin-bottom:8px;">
+                <button class="btn btn-primary btn-sm" onclick="saveRetention()">Save Retention Settings</button>
+                <div id="retentionMessage" class="msg" style="display:none;"></div>
+            </div>
+
             <!-- Delete Device ID Card -->
             <div class="card" style="margin-top:12px; border: 1px solid #c92a2a;" id="deleteDeviceCard">
                 <h2>⚠️ Delete Device ID</h2>
@@ -762,6 +779,67 @@ HTML_TEMPLATE = '''
             });
         }
         
+        // === Data Retention ===
+        function loadRetention() {
+            fetch('/api/config/retention')
+                .then(r => r.json())
+                .then(data => {
+                    document.getElementById('gpsRetention').value = data.gps_retention_days || 30;
+                    document.getElementById('imageRetention').value = data.image_retention_days || 15;
+                });
+        }
+
+        function saveRetention() {
+            const gpsDays = document.getElementById('gpsRetention').value;
+            const imageDays = document.getElementById('imageRetention').value;
+            const password = document.getElementById('retentionPassword').value;
+            const msgDiv = document.getElementById('retentionMessage');
+
+            if (!password) {
+                msgDiv.style.display = 'block';
+                msgDiv.className = 'msg error';
+                msgDiv.textContent = 'Password is required';
+                setTimeout(() => { msgDiv.style.display = 'none'; }, 3000);
+                return;
+            }
+            if (!gpsDays || gpsDays < 1 || gpsDays > 365 || !imageDays || imageDays < 1 || imageDays > 365) {
+                msgDiv.style.display = 'block';
+                msgDiv.className = 'msg error';
+                msgDiv.textContent = 'Days must be between 1 and 365';
+                setTimeout(() => { msgDiv.style.display = 'none'; }, 3000);
+                return;
+            }
+
+            fetch('/api/config/retention', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    gps_retention_days: parseInt(gpsDays),
+                    image_retention_days: parseInt(imageDays),
+                    password: password
+                })
+            })
+            .then(r => r.json())
+            .then(data => {
+                msgDiv.style.display = 'block';
+                if (data.success) {
+                    msgDiv.className = 'msg success';
+                    msgDiv.textContent = 'Retention settings saved!';
+                    document.getElementById('retentionPassword').value = '';
+                } else {
+                    msgDiv.className = 'msg error';
+                    msgDiv.textContent = data.error || 'Failed to save';
+                }
+                setTimeout(() => { msgDiv.style.display = 'none'; }, 4000);
+            })
+            .catch(e => {
+                msgDiv.style.display = 'block';
+                msgDiv.className = 'msg error';
+                msgDiv.textContent = 'Error: ' + e;
+                setTimeout(() => { msgDiv.style.display = 'none'; }, 4000);
+            });
+        }
+
         // === Monitoring Toggle ===
         function checkMonitoring() {
             fetch('/api/monitoring/status')
@@ -819,6 +897,7 @@ HTML_TEMPLATE = '''
         // Init
         checkStatus();
         loadActivationSpeed();
+        loadRetention();
         checkMonitoring();
     </script>
 </body>
@@ -1094,6 +1173,51 @@ def index():
         HTML_TEMPLATE,
         ip_address=get_ip_address()
     )
+
+
+# --- Data Retention APIs ---
+
+@app.route('/api/config/retention', methods=['GET'])
+def api_get_retention():
+    """Get data retention settings"""
+    gps_days = get_configure('gps_retention_days')
+    image_days = get_configure('image_retention_days')
+    return jsonify({
+        'gps_retention_days': int(gps_days) if gps_days else 30,
+        'image_retention_days': int(image_days) if image_days else 15,
+    })
+
+
+@app.route('/api/config/retention', methods=['POST'])
+def api_set_retention():
+    """Set data retention settings (requires password)"""
+    try:
+        data = request.get_json()
+        password = data.get('password', '')
+        gps_days = data.get('gps_retention_days')
+        image_days = data.get('image_retention_days')
+
+        delete_password = get_delete_password()
+        if not password or password != delete_password:
+            return jsonify({'success': False, 'error': 'Invalid password'})
+
+        if gps_days is not None:
+            gps_days = int(gps_days)
+            if gps_days < 1 or gps_days > 365:
+                return jsonify({'success': False, 'error': 'GPS days must be 1-365'})
+            set_configure('gps_retention_days', gps_days)
+
+        if image_days is not None:
+            image_days = int(image_days)
+            if image_days < 1 or image_days > 365:
+                return jsonify({'success': False, 'error': 'Image days must be 1-365'})
+            set_configure('image_retention_days', image_days)
+
+        return jsonify({'success': True})
+    except ValueError:
+        return jsonify({'success': False, 'error': 'Invalid value'})
+    except Exception as e:
+        return jsonify({'success': False, 'error': str(e)})
 
 
 # --- Provisioning APIs ---
@@ -1482,6 +1606,93 @@ def api_wifi_reset():
 
 
 # ============================================
+# Data Retention Cleanup
+# ============================================
+
+def _run_retention_cleanup():
+    """Delete old GPS data and images based on retention settings.
+    GPS retention uses 'active days' — only days with data count.
+    Image retention uses calendar days from folder name (YYYYMMDD format).
+    """
+    import shutil
+    import db_helper
+    from datetime import datetime, timedelta
+
+    try:
+        # Get retention settings
+        gps_days_str = get_configure('gps_retention_days')
+        image_days_str = get_configure('image_retention_days')
+        gps_days = int(gps_days_str) if gps_days_str else 30
+        image_days = int(image_days_str) if image_days_str else 15
+
+        # --- GPS data cleanup (active days) ---
+        # Get list of distinct active days, ordered newest first
+        rows = db_helper.fetchall(
+            "SELECT DISTINCT date(timestamp) as day FROM gps_data ORDER BY day DESC")
+        if rows:
+            active_days = [r['day'] for r in rows if r['day']]
+            if len(active_days) > gps_days:
+                # Keep only the most recent N active days
+                cutoff_day = active_days[gps_days - 1]  # last day to keep
+                deleted = db_helper.execute_commit(
+                    "DELETE FROM gps_data WHERE date(timestamp) < ?", (cutoff_day,))
+                print(f"[Retention] GPS: kept {gps_days} active days, cutoff={cutoff_day}")
+
+                # Also clean car_data with same cutoff
+                db_helper.execute_commit(
+                    "DELETE FROM car_data WHERE date(timestamp) < ?", (cutoff_day,))
+
+        # --- Image cleanup (calendar days from folder names) ---
+        images_base = os.path.join(os.path.dirname(os.path.abspath(__file__)), "images")
+        if os.path.exists(images_base):
+            cutoff_date = datetime.now() - timedelta(days=image_days)
+            for item in os.listdir(images_base):
+                item_path = os.path.join(images_base, item)
+                if not os.path.isdir(item_path):
+                    continue
+                # Skip 'events' and 'pending' folders — check date-named folders
+                if item in ('events', 'pending'):
+                    # For events folder, clean subfolders by date prefix (YYYYMMDD_*)
+                    if item == 'events':
+                        for event_dir in os.listdir(item_path):
+                            try:
+                                date_str = event_dir[:8]  # YYYYMMDD
+                                folder_date = datetime.strptime(date_str, '%Y%m%d')
+                                if folder_date < cutoff_date:
+                                    shutil.rmtree(os.path.join(item_path, event_dir))
+                                    print(f"[Retention] Deleted event folder: {event_dir}")
+                            except (ValueError, OSError):
+                                continue
+                    continue
+                # Date-named daily folders (e.g., 2026-02-10 or 20260210)
+                try:
+                    # Try YYYY-MM-DD format first, then YYYYMMDD
+                    try:
+                        folder_date = datetime.strptime(item, '%Y-%m-%d')
+                    except ValueError:
+                        folder_date = datetime.strptime(item, '%Y%m%d')
+                    if folder_date < cutoff_date:
+                        shutil.rmtree(item_path)
+                        print(f"[Retention] Deleted image folder: {item}")
+                except (ValueError, OSError):
+                    continue
+
+    except Exception as e:
+        print(f"[Retention] Cleanup error: {e}")
+
+
+def _retention_cleanup_loop():
+    """Run cleanup every hour."""
+    time.sleep(60)  # Wait 1 min after startup
+    while True:
+        try:
+            _run_retention_cleanup()
+        except Exception as e:
+            print(f"[Retention] Loop error: {e}")
+        time.sleep(3600)  # Every hour
+
+
+# ============================================
 # Main
 # ============================================
 
@@ -1492,7 +1703,11 @@ if __name__ == '__main__':
     ip = get_ip_address()
     print(f"Open in browser: http://{ip}:5000")
     print("=" * 50)
-    
+
+    # Start data retention cleanup thread
+    cleanup_thread = threading.Thread(target=_retention_cleanup_loop, daemon=True)
+    cleanup_thread.start()
+
     # Run with minimal resources
     app.run(
         host='0.0.0.0',
