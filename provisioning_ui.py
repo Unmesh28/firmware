@@ -61,7 +61,6 @@ SERVICES = [
     {'name': 'send-data-api', 'display': 'Data Sync', 'description': 'Telemetry to cloud API'},
     {'name': 'upload_images', 'display': 'Image Upload', 'description': 'Upload images to cloud'},
     {'name': 'ota-auto-update', 'display': 'OTA Updates', 'description': 'Auto-update daemon'},
-    {'name': 'provisioning_ui', 'display': 'Web UI', 'description': 'This management page'},
     {'name': 'pi-control', 'display': 'Pi Control', 'description': 'Remote device control'},
 ]
 
