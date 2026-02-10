@@ -28,7 +28,7 @@ from pathlib import Path
 from datetime import datetime
 
 # Setup logging - use user-writable location
-LOG_DIR = os.path.expanduser("~/Desktop/Updated_codes/logs")
+LOG_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "logs")
 os.makedirs(LOG_DIR, exist_ok=True)
 LOG_FILE = os.path.join(LOG_DIR, "ota_startup.log")
 
@@ -61,7 +61,7 @@ class Config:
     FIRMWARE_DIR = os.getenv("FIRMWARE_DIR", "/home/pi/facial-tracker-firmware")
     BACKUP_DIR = os.getenv("BACKUP_DIR", "/home/pi/facial-tracker-firmware/backups")
     OTA_DIR = os.getenv("OTA_DIR", "/home/pi/facial-tracker-firmware/ota")
-    DB_PATH = os.getenv("DB_PATH", "/home/pi/facial-tracker-firmware/car.db")
+    DB_PATH = os.getenv("DB_PATH", "/home/pi/facial-tracker-firmware/data/blinksmart.db")
     MIGRATIONS_DIR = os.getenv("MIGRATIONS_DIR", "/home/pi/facial-tracker-firmware/migrations")
     VERSION_FILE = os.getenv("VERSION_FILE", "/home/pi/facial-tracker-firmware/ota/version.json")
     
@@ -79,22 +79,12 @@ class Config:
 
 
 def get_device_id():
-    """Get device ID from MySQL database"""
+    """Get device ID from SQLite database"""
     try:
-        import mysql.connector
-        conn = mysql.connector.connect(
-            host='127.0.0.1',
-            database='car',
-            user='root',
-            password='raspberry@123'
-        )
-        cursor = conn.cursor()
-        cursor.execute("SELECT device_id FROM device LIMIT 1")
-        row = cursor.fetchone()
-        cursor.close()
-        conn.close()
+        import db_helper
+        row = db_helper.fetchone("SELECT device_id FROM device LIMIT 1")
         if row:
-            return row[0]
+            return row['device_id']
         return None
     except Exception as e:
         logger.error(f"Failed to get device ID: {e}")
@@ -102,22 +92,12 @@ def get_device_id():
 
 
 def get_auth_key():
-    """Get auth key from MySQL database (new authentication method)"""
+    """Get auth key from SQLite database"""
     try:
-        import mysql.connector
-        conn = mysql.connector.connect(
-            host='127.0.0.1',
-            database='car',
-            user='root',
-            password='raspberry@123'
-        )
-        cursor = conn.cursor()
-        cursor.execute("SELECT auth_key FROM device LIMIT 1")
-        row = cursor.fetchone()
-        cursor.close()
-        conn.close()
+        import db_helper
+        row = db_helper.fetchone("SELECT auth_key FROM device LIMIT 1")
         if row:
-            return row[0]
+            return row['auth_key']
         return None
     except Exception as e:
         logger.error(f"Failed to get auth key: {e}")
@@ -125,22 +105,12 @@ def get_auth_key():
 
 
 def get_access_token():
-    """Get access token from MySQL database (legacy - for backward compatibility)"""
+    """Get access token from SQLite database (legacy - for backward compatibility)"""
     try:
-        import mysql.connector
-        conn = mysql.connector.connect(
-            host='127.0.0.1',
-            database='car',
-            user='root',
-            password='raspberry@123'
-        )
-        cursor = conn.cursor()
-        cursor.execute("SELECT access_token FROM user_info LIMIT 1")
-        row = cursor.fetchone()
-        cursor.close()
-        conn.close()
+        import db_helper
+        row = db_helper.fetchone("SELECT access_token FROM user_info LIMIT 1")
         if row:
-            return row[0]
+            return row['access_token']
         return None
     except Exception as e:
         logger.error(f"Failed to get access token: {e}")
@@ -346,49 +316,33 @@ def run_migrations():
     if applied_file.exists():
         applied = set(applied_file.read_text().strip().split('\n'))
     
-    # Run pending migrations using MySQL
-    import mysql.connector
-    
+    # Run pending migrations using SQLite
+    import db_helper
+
     try:
-        conn = mysql.connector.connect(
-            host='127.0.0.1',
-            database='car',
-            user='root',
-            password='raspberry@123'
-        )
-        cursor = conn.cursor()
-        
         for migration in migrations:
             if migration.name in applied:
                 continue
-            
+
             logger.info(f"Running migration: {migration.name}")
-            
+
             try:
                 sql = migration.read_text()
-                # Execute each statement separately for MySQL
                 for statement in sql.split(';'):
                     statement = statement.strip()
                     if statement:
-                        cursor.execute(statement)
-                conn.commit()
+                        db_helper.execute_commit(statement)
                 applied.add(migration.name)
                 logger.info(f"Migration completed: {migration.name}")
             except Exception as e:
                 logger.error(f"Migration failed: {migration.name} - {e}")
-                conn.rollback()
-                cursor.close()
-                conn.close()
                 return False
-        
-        cursor.close()
-        conn.close()
-        
+
         # Save applied migrations
         applied_file.write_text('\n'.join(sorted(applied)))
-        
+
         return True
-        
+
     except Exception as e:
         logger.error(f"Database error: {e}")
         return False

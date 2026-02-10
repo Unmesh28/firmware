@@ -47,7 +47,7 @@ from typing import Dict, List, Optional, Tuple
 from dataclasses import dataclass
 
 # Setup logging
-LOG_DIR = os.path.expanduser("~/Desktop/Updated_codes/logs")
+LOG_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "logs")
 os.makedirs(LOG_DIR, exist_ok=True)
 LOG_FILE = os.path.join(LOG_DIR, "ota_updater.log")
 
@@ -199,23 +199,12 @@ class OTAUpdater:
         return sorted(versions, key=lambda v: [int(x) for x in v.split('.')])
     
     def get_device_credentials(self) -> Tuple[Optional[str], Optional[str]]:
-        """Get device ID and auth key from local database"""
+        """Get device ID and auth key from local SQLite database"""
         try:
-            import mysql.connector
-            conn = mysql.connector.connect(
-                host='127.0.0.1',
-                database='car',
-                user='root',
-                password='raspberry@123'
-            )
-            cursor = conn.cursor()
-            cursor.execute("SELECT device_id, auth_key FROM device LIMIT 1")
-            row = cursor.fetchone()
-            cursor.close()
-            conn.close()
-            
+            import db_helper
+            row = db_helper.fetchone("SELECT device_id, auth_key FROM device LIMIT 1")
             if row:
-                return row[0], row[1]
+                return row['device_id'], row['auth_key']
             return None, None
         except Exception as e:
             logger.error(f"Failed to get credentials: {e}")

@@ -12,6 +12,7 @@ WorkingDirectory=/home/pi/facial-tracker-firmware
 
 # OTA daemon: avoid .env dependency
 Environment=PYTHONUNBUFFERED=1
+Environment=DB_PATH=/home/pi/facial-tracker-firmware/data/blinksmart.db
 
 ExecStart=/home/pi/facial-tracker-firmware/venv/bin/python \
           /home/pi/facial-tracker-firmware/ota/ota_updater.py daemon

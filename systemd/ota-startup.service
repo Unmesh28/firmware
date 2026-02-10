@@ -12,6 +12,8 @@ Group=pi
 
 WorkingDirectory=/home/pi/facial-tracker-firmware
 
+Environment=DB_PATH=/home/pi/facial-tracker-firmware/data/blinksmart.db
+
 ExecStart=/home/pi/facial-tracker-firmware/venv/bin/python \
           /home/pi/facial-tracker-firmware/ota_startup.py
 
