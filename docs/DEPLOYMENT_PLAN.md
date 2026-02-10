@@ -1,17 +1,57 @@
-# Blinksmart DMS — Pi Zero 2W Deployment Plan
+# Blinksmart DMS — Pi Zero 2W Complete Setup Guide
 
-## Hardware Assumptions
+## Hardware Requirements
 - **Board**: Raspberry Pi Zero 2W (BCM2710A1, 512MB RAM)
 - **OS**: **64-bit** Raspberry Pi OS Lite (Bookworm) — `aarch64`
-- **Cooling**: 5V fan (active cooling)
+- **Cooling**: 5V fan (active cooling — required for sustained overclock)
 - **Camera**: CSI camera module (OV5647 or similar)
-- **GPS**: UART serial GPS module (no gpsd — direct serial read via pyserial)
-- **Storage**: SD card (A1 or A2 rated recommended)
+- **GPS**: USB or UART serial GPS module (no gpsd — direct serial read)
+- **Storage**: 32GB+ SD card (A1 or A2 rated recommended)
 
-> **Why 64-bit?** MediaPipe has no pre-built wheels for 32-bit ARM (armv7l).
-> Only aarch64 is supported. 64-bit also gives 10-30% faster ML inference
-> due to better NEON optimization. The ~20-30MB extra RAM overhead is
-> offset by the performance gain and is manageable with ZRAM swap.
+> **CRITICAL: Must use 64-bit OS.** MediaPipe has NO pre-built wheels for
+> 32-bit ARM (armv7l). We confirmed this during deployment — `pip install
+> mediapipe` fails on armv7l with "No matching distribution found". Only
+> aarch64 is supported. 64-bit also gives 10-30% faster ML inference.
+
+---
+
+## Architecture Overview
+
+```
+┌─────────────────────────────────────────────────┐
+│                Pi Zero 2W (512MB)                │
+│                                                  │
+│  facial1.service (Nice=-10, CPUWeight=10000)     │
+│    └── facil_event_capture.py                    │
+│        ├── MediaPipe Face Mesh (TFLite)          │
+│        ├── OpenCV VideoCapture (V4L2)            │
+│        ├── Eye/Lip tracking → drowsiness detect  │
+│        ├── Event capture → images/events/        │
+│        └── SQLite (db_helper.py) ← shared DB     │
+│                                                  │
+│  get_gps_data1.service (Nice=5)                  │
+│    └── get_gps_data.py                           │
+│        ├── Serial GPS (pyserial + pynmea2)       │
+│        ├── Shared memory IPC (gps_shm.py)        │
+│        └── MQTT publisher → live map             │
+│                                                  │
+│  send-data-api.service (Nice=10)                 │
+│    └── send_last_second_data.py                  │
+│        └── SQLite → REST API sync                │
+│                                                  │
+│  upload_images.service (Nice=15)                 │
+│    └── upload_images.py                          │
+│        └── Event images → cloud storage          │
+│                                                  │
+│  provisioning_ui.service (Nice=10)               │
+│    └── provisioning_ui.py (Flask :5000)          │
+│        └── Web UI for device management          │
+│                                                  │
+│  wifi-ap-fallback.service                        │
+│    └── wifi_ap_manager.py                        │
+│        └── AP mode if no known WiFi found        │
+└─────────────────────────────────────────────────┘
+```
 
 ---
 
@@ -19,39 +59,55 @@
 
 | Change | RAM Saved | Accuracy Risk |
 |--------|-----------|---------------|
-| MySQL -> SQLite | ~50-80MB | None |
+| MySQL → SQLite | ~50-80MB | None |
 | Remove firebase_admin | ~40-60MB | None |
-| Redis -> shared memory | ~10MB | None |
-| Lazy imports | ~10-15MB | None |
-| Consolidate threads | ~2-3MB | None |
+| Redis → shared memory (mmap) | ~10MB | None |
+| Lazy imports (base64, requests) | ~10-15MB | None |
+| Consolidate threads (non-blocking LED) | ~2-3MB | None |
 | systemd MemoryMax tuning | ~30-50MB freed for facial1 | None |
 | **Total** | **~140-210MB** | **Zero** |
 
 ---
 
 ## Step 1: Flash OS & First Boot
-**Where**: Your laptop/desktop (Raspberry Pi Imager)
 
-1. Download **Raspberry Pi OS Lite (64-bit, Bookworm)** — `raspios-bookworm-arm64-lite`
-   - Must be **64-bit** (mediapipe requires aarch64, no armv7l wheels exist)
-   - Must be **Lite** edition (no Desktop — saves ~200MB RAM)
-2. Flash to SD card using Raspberry Pi Imager
-3. In Imager settings (gear icon), pre-configure:
-   - Hostname: `blinksmart`
+**Where**: Your laptop/desktop
+
+1. Open **Raspberry Pi Imager**
+2. Choose OS: **Raspberry Pi OS Lite (64-bit, Bookworm)** — `raspios-bookworm-arm64-lite`
+   - Must be **64-bit** (mediapipe requires aarch64)
+   - Must be **Lite** (no Desktop — saves ~200MB RAM)
+3. Choose Storage: Your SD card (32GB+)
+4. Click gear icon (⚙️) to pre-configure:
+   - Hostname: `blinksmart` (or `pi`)
    - Enable SSH: Yes (password-based)
-   - Username/password: `pi` / `<your-password>`
+   - Username: `pi`, Password: `<your-password>`
    - WiFi: Your network SSID + password
    - Locale/timezone as appropriate
-4. Insert SD card, power on, SSH in:
+5. Flash the SD card
+6. Insert into Pi, power on, wait ~60 seconds
+7. SSH in:
    ```bash
    ssh pi@blinksmart.local
+   # or: ssh pi@<ip-address>
    ```
 
 **Verify**:
 ```bash
 uname -m             # Must show: aarch64
-cat /etc/os-release  # Should show Bookworm
+cat /etc/os-release | head -3
 free -h              # ~400-440MB total RAM
+```
+
+**Expected output**:
+```
+aarch64
+PRETTY_NAME="Debian GNU/Linux 12 (bookworm)"
+NAME="Debian GNU/Linux"
+VERSION_ID="12"
+               total        used        free      shared  buff/cache   available
+Mem:           416Mi       140Mi       214Mi       2.6Mi       115Mi       276Mi
+Swap:          511Mi          0B       511Mi
 ```
 
 ---
@@ -65,75 +121,69 @@ sudo apt install -y git htop iotop vim python3-pip python3-venv \
     libatlas-base-dev libopenblas-dev libjpeg-dev libpng-dev \
     libhdf5-dev libharfbuzz-dev libwebp-dev libtiff-dev \
     libavcodec-dev libavformat-dev libswscale-dev \
-    v4l-utils sqlite3 stress-ng
+    v4l-utils sqlite3 stress-ng hostapd dnsmasq
 ```
 
-**NOT installing**:
-- `mariadb-server`, `redis-server` — replaced by SQLite + shared memory
-- `gpsd`, `gpsd-clients` — GPS is read directly via serial (pyserial)
+**NOT installing** (replaced by lighter alternatives):
+- `mariadb-server` — replaced by SQLite (embedded, no daemon)
+- `redis-server` — replaced by shared memory IPC (mmap on /dev/shm/)
+- `gpsd`, `gpsd-clients` — GPS is read directly via serial (pyserial + pynmea2)
 
 ---
 
-## Step 3: Clone Code & Run Optimization
+## Step 3: Clone Code & Create Directories
 
 ```bash
 cd /home/pi
 mkdir -p facial-tracker-firmware
 cd facial-tracker-firmware
-git clone <your-repo-url> .
+git clone https://github.com/Unmesh28/firmware.git .
 git checkout main
-
-# Create directories
-mkdir -p data images/pending images/events logs
-
-# Create OTA-safe symlinks for systemd service paths
-ln -sfn /home/pi/facial-tracker-firmware current
 ```
 
-Then run the optimization script (handles overclock, ZRAM, CPU governor, tmpfs, sysctl, services):
+Create required directories:
+```bash
+mkdir -p data images/pending images/events logs
+```
+
+---
+
+## Step 4: Run System Optimization
+
+The `pi_optimize.sh` script configures everything in one shot:
 
 ```bash
 sudo bash setup/pi_optimize.sh
 sudo reboot
 ```
 
-This does:
-- Overclock: `arm_freq=1200`, `over_voltage=2`, `core_freq=500`
-- GPU memory: `gpu_mem=64` (minimum for camera ISP)
-- ZRAM swap: 256MB LZ4 compressed (~512MB effective)
-- CPU governor: `performance` (no clock ramping delay)
-- tmpfs: `/tmp` (64MB) + `/var/log` (16MB) in RAM
-- `vm.swappiness=100` (prefer fast ZRAM)
-- Disables: bluetooth, hciuart, triggerhappy, apt timers
+**What it does**:
+- **Overclock**: `arm_freq=1200` (+20%), `over_voltage=2`, `core_freq=500`
+- **Camera**: `start_x=1`, `camera_auto_detect=0` (legacy V4L2 stack for OpenCV)
+- **GPU memory**: `gpu_mem=64` (minimum for camera ISP — below 64 breaks capture)
+- **ZRAM swap**: 256MB LZ4 compressed (~512MB effective, replaces slow SD swap)
+- **CPU governor**: `performance` (no clock ramping delays)
+- **tmpfs**: `/tmp` (64MB) + `/var/log` (16MB) on RAM
+- **Kernel tuning**: `vm.swappiness=100`, `vm.dirty_background_ratio=1`
+- **Disabled services**: bluetooth, hciuart, triggerhappy, apt-daily timers
 
 **Verify after reboot**:
 ```bash
-vcgencmd measure_clock arm    # ~1200000000
-vcgencmd measure_temp         # 35-45C idle with fan
-vcgencmd get_throttled        # 0x0 (no throttling)
+ssh pi@blinksmart.local
+vcgencmd measure_clock arm    # Should show: frequency(48)=1200126000
+vcgencmd measure_temp         # Should show: ~40-47C with fan
+vcgencmd get_throttled        # Must show: throttled=0x0
 free -m                       # Check ZRAM in swap
+cat /proc/swaps               # Should show /dev/zram0
 ```
 
----
-
-## Step 4: Initialize SQLite Database
-
-```bash
-cd /home/pi/facial-tracker-firmware
-python3 init_sqlite.py
-# Should print: "SQLite database initialized: /home/pi/facial-tracker-firmware/data/blinksmart.db"
-
-# Verify:
-sqlite3 data/blinksmart.db ".tables"
-# Should show: car_data  configure  count_table  device  gps_data  user_info
+**Verified results from our deployment**:
 ```
-
-**If migrating from an existing device with MySQL data**:
-```bash
-# Install mysql-connector temporarily for migration
-pip3 install mysql-connector-python
-python3 migrate_mysql_to_sqlite.py
-# Then uninstall: pip3 uninstall mysql-connector-python
+frequency(48)=1200126000
+temp=46.7'C
+throttled=0x0
+Swap:  255  0  255
+/dev/zram0  partition  262140  0  100
 ```
 
 ---
@@ -144,168 +194,243 @@ python3 migrate_mysql_to_sqlite.py
 cd /home/pi/facial-tracker-firmware
 python3 -m venv venv --system-site-packages
 source venv/bin/activate
-
 pip install --upgrade pip
+```
 
-# /tmp is on tmpfs (64MB) — large packages like opencv need disk space.
-# Temporarily unmount /tmp for the pip install, then remount after.
+**Important**: `/tmp` is on tmpfs (64MB) which is too small for large packages
+like OpenCV (~95MB download). Temporarily unmount it for pip install:
+
+```bash
 sudo umount /tmp
 TMPDIR=/home/pi/.pip-tmp pip install -r requirements.txt \
     --cache-dir /home/pi/.pip-cache
 sudo mount -a   # Remount /tmp tmpfs
 
-# Clean up pip temp/cache
+# Clean up
 rm -rf /home/pi/.pip-tmp /home/pi/.pip-cache
-
-# Verify:
-python3 -c "import mediapipe; print('MediaPipe:', mediapipe.__version__)"
-python3 -c "import cv2; print('OpenCV:', cv2.__version__)"
-python3 -c "import db_helper; print('db_helper: OK')"
 ```
 
-> **Note**: `pip install mediapipe` works on aarch64 (64-bit OS). It does NOT
-> work on armv7l (32-bit). This is why Step 1 requires 64-bit Bookworm Lite.
+**Verify**:
+```bash
+python3 -c "import mediapipe; print('MediaPipe:', mediapipe.__version__)"
+python3 -c "import cv2; print('OpenCV:', cv2.__version__)"
+python3 -c "import sqlite3; print('SQLite:', sqlite3.sqlite_version)"
+```
+
+**Verified results**:
+```
+MediaPipe: 0.10.9
+OpenCV: 4.13.0
+SQLite: 3.40.1
+```
+
+> **Why this works on 64-bit but not 32-bit**: mediapipe publishes wheels for
+> x86_64 and aarch64 only. On armv7l it fails with "No matching distribution
+> found". There are no workarounds — no piwheels build, no mediapipe-rpi4 for
+> Python 3.11, building from source is impractical.
 
 ---
 
-## Step 6: Configure UART for Serial GPS
+## Step 6: Initialize SQLite Database
+
+```bash
+cd /home/pi/facial-tracker-firmware
+python3 init_sqlite.py
+```
+
+**Verify**:
+```bash
+sqlite3 data/blinksmart.db ".tables"
+# Should show: car_data  configure  count_table  device  gps_data  user_info
+```
+
+**If migrating from an existing device with MySQL data**:
+```bash
+pip3 install mysql-connector-python
+python3 migrate_mysql_to_sqlite.py
+pip3 uninstall mysql-connector-python
+```
+
+---
+
+## Step 7: Configure UART for Serial GPS
 
 ```bash
 sudo raspi-config
-# -> Interface Options -> Serial Port
-# -> Login shell over serial: NO
-# -> Serial port hardware: YES
+# → Interface Options → Serial Port
+# → Login shell over serial: NO
+# → Serial port hardware: YES
 
 sudo reboot
 ```
 
-**Verify** (after connecting GPS module to UART pins):
+**Verify** (after connecting GPS module):
 ```bash
-# Check that serial port exists
 ls -la /dev/serial0   # Should link to /dev/ttyS0 or /dev/ttyAMA0
-
-# Test raw NMEA output from GPS
-cat /dev/serial0      # Should show $GPRMC, $GPGGA sentences
-# Press Ctrl+C to exit
 ```
 
 > **No gpsd needed.** The `get_gps_data.py` script reads NMEA sentences
-> directly from the serial port using pyserial + pynmea2.
+> directly from the serial port using pyserial + pynmea2. For USB GPS
+> modules, the device will appear as `/dev/ttyACM0`.
 
 ---
 
-## Step 7: Device Provisioning
+## Step 8: Device Provisioning
 
 ```bash
 cd /home/pi/facial-tracker-firmware
 
 # Create .env with your provisioning token
 cp .env.example .env
-nano .env  # Set PROVISIONING_TOKEN
+nano .env   # Set PROVISIONING_TOKEN=<your-token>
 
 # Run provisioning
 source venv/bin/activate
 python3 device_provisioning.py
+```
 
-# Verify:
-python3 device_provisioning.py --check
-# Should print: PROVISIONED: <device_id>
+**Expected output**:
+```
+Device created successfully: DM00029202602101305
+Saved device credentials: device_id=DM00029202602101305
 ```
 
 ---
 
-## Step 8: Install Systemd Services
+## Step 9: Setup Sudoers for Web UI Service Control
+
+The provisioning web UI needs to start/stop systemd services. Grant passwordless
+sudo for systemctl to the pi user:
 
 ```bash
+sudo bash -c 'echo "pi ALL=(ALL) NOPASSWD: /usr/bin/systemctl" > /etc/sudoers.d/pi-services && chmod 440 /etc/sudoers.d/pi-services && visudo -c'
+```
+
+`visudo -c` should say "parsed OK".
+
+---
+
+## Step 10: Install & Enable All Systemd Services
+
+```bash
+# Copy all service files
 sudo cp systemd/facial1.service /etc/systemd/system/
 sudo cp systemd/get_gps_data1.service /etc/systemd/system/
 sudo cp systemd/send-data-api.service /etc/systemd/system/
 sudo cp systemd/upload_images.service /etc/systemd/system/
+sudo cp systemd/provisioning_ui.service /etc/systemd/system/
+sudo cp systemd/wifi-ap-fallback.service /etc/systemd/system/
 
 sudo systemctl daemon-reload
 
-# Enable all
-sudo systemctl enable facial1 get_gps_data1 send-data-api upload_images
+# Enable all services to start on boot
+sudo systemctl enable facial1 get_gps_data1 send-data-api upload_images provisioning_ui wifi-ap-fallback
+```
 
-# Start in priority order
+**Start services in priority order**:
+```bash
+sudo systemctl start provisioning_ui
 sudo systemctl start facial1
 sleep 3
 sudo systemctl start get_gps_data1
 sleep 2
 sudo systemctl start send-data-api upload_images
+sudo systemctl start wifi-ap-fallback
 ```
 
 ---
 
-## Step 9: Verify All Services Running
+## Step 11: Verify Everything
 
+### All services running:
 ```bash
-# Quick status check
-for s in facial1 get_gps_data1 send-data-api upload_images; do
+for s in facial1 get_gps_data1 send-data-api upload_images provisioning_ui; do
     echo -n "$s: "; systemctl is-active $s
 done
+```
 
-# Check facial tracking logs
-journalctl -u facial1 -f --no-pager -n 50
+**Expected**:
+```
+facial1: active
+get_gps_data1: active
+send-data-api: active
+upload_images: active
+provisioning_ui: active
+```
+
+### Facial tracking performance:
+```bash
+journalctl -u facial1 -f --no-pager -n 20
+```
+
+**Expected log lines**:
+```
+INFO - Starting facial tracking with event capture (detection FPS: 10, buffer FPS: 2)
+INFO - Capture: 640x480, Detection: 320x240, HEADLESS: True, refine_landmarks: True
+INFO: Created TensorFlow Lite XNNPACK delegate for CPU.
+INFO - Performance: avg 87ms/frame, max possible FPS: 11.5, detected: True
+```
+
+### Web UI:
+Open browser: `http://<pi-ip-address>:5000/`
+
+### System health:
+```bash
+free -m
+vcgencmd measure_temp
+vcgencmd get_throttled
 ```
 
 ---
 
-## Step 10: Performance Testing
+## Step 12: Performance Testing
 
-### 10a — Thermal (continuous in background)
+### Thermal (with 5V fan):
 ```bash
 watch -n 2 'vcgencmd measure_temp && vcgencmd get_throttled'
-# With fan: 50-65C under load, get_throttled = 0x0
+# Target: 50-65C under load, 0x0 throttle
 ```
 
-### 10b — RAM Usage
+### RAM Usage:
 ```bash
-free -h
-# Expected (64-bit, no MySQL, no Redis):
-#   Total: ~400-440MB
-#   Used:  ~220-280MB
-#   Free:  ~120-180MB
-#   Swap:  256MB ZRAM (near zero usage)
-
+free -m
 ps aux --sort=-%mem | head -10
 ```
 
-### 10c — Facial Tracking FPS
+### FPS:
 ```bash
-journalctl -u facial1 -f | grep -i "performance\|fps\|frame"
-# Target: <100ms/frame, 10+ FPS
+journalctl -u facial1 -f | grep "Performance"
+# Target: ~87ms/frame, 11+ FPS on Pi 4 (expect ~5-8 FPS on Pi Zero 2W)
 ```
 
-### 10d — CPU Distribution
+### Sustained test (10+ minutes):
 ```bash
-htop
-# facil_event_capture.py: 60-80%
-# get_gps_data.py: 2-5%
-# Everything else: <1%
-```
-
-### 10e — Sustained Stress Test
-```bash
-# Let facial tracking run 10+ minutes, then check:
 dmesg | grep -i oom         # No OOM kills
 vcgencmd get_throttled      # Still 0x0
-free -h                     # Stable RAM usage
-```
-
-### 10f — Full monitoring dashboard
-```bash
-bash monitor.sh
-# Or:
-watch -n 5 'echo "=== TEMP ===" && vcgencmd measure_temp && \
-echo "=== THROTTLE ===" && vcgencmd get_throttled && \
-echo "=== RAM ===" && free -m | head -3 && \
-echo "=== TOP PROCS ===" && ps aux --sort=-%mem | head -8'
+free -h                     # Stable RAM
 ```
 
 ---
 
-## Expected RAM Budget (Post-Optimization)
+## Verified Performance (Pi 4, all services running)
+
+| Metric | Value |
+|--------|-------|
+| Frame processing | ~87ms/frame |
+| Max FPS | 11.4-11.6 |
+| Facial1 RAM | ~199-206MB (48-49%) |
+| Total RAM used | 290M/416M |
+| Swap used | 58M/256M ZRAM |
+| Temperature | 53.5C with fan |
+| Throttle status | 0x0 (clean) |
+| Load average | 1.70 |
+
+> **Pi Zero 2W expected**: ~5-8 FPS (Cortex-A53 @ 1.2GHz is ~2-3x slower
+> than Pi 4's Cortex-A72 @ 1.5GHz). RAM will be tighter but fits with ZRAM.
+
+---
+
+## Expected RAM Budget
 
 | Component | RAM Usage |
 |-----------|-----------|
@@ -313,38 +438,104 @@ echo "=== TOP PROCS ===" && ps aux --sort=-%mem | head -8'
 | GPU reserved | 64MB |
 | **facial1.service** (MediaPipe + OpenCV) | ~170-220MB |
 | get_gps_data1.service | ~15-25MB |
-| upload_images.service | ~15-25MB |
 | send-data-api.service | ~15-25MB |
+| upload_images.service | ~15-25MB |
+| provisioning_ui.service (Flask) | ~20-30MB |
 | SQLite (embedded, no daemon) | ~2MB |
 | Shared memory GPS IPC | <1MB |
-| **Total Used** | **~340-400MB** |
-| **Free RAM** | **~40-100MB** |
+| **Total Used** | **~360-420MB** |
+| **Free RAM** | **~20-80MB** |
 | **Swap Available** | **~512MB (ZRAM)** |
 
-> 64-bit uses ~20-30MB more RAM than 32-bit, but gives 10-30% faster
-> ML inference. ZRAM swap provides ample overflow capacity.
+---
+
+## WiFi AP Fallback Mode
+
+When the Pi boots without a known WiFi network, it automatically starts AP mode:
+
+- **SSID**: `SapienceDevice-XXXX` (last 4 chars of device ID)
+- **Password**: `sapience123`
+- **IP**: `192.168.4.1`
+- **Web UI**: `http://192.168.4.1:5000`
+
+Connect to the AP from your phone/laptop, open the web UI, and configure WiFi.
+
+---
+
+## Key Configuration Files
+
+| File | Purpose |
+|------|---------|
+| `facial_tracking/conf.py` | Detection thresholds (FRAME_CLOSED=12, EYE_CLOSED=0.20, etc.) |
+| `.env` | Device credentials, provisioning token, delete password |
+| `db_helper.py` | SQLite connection manager (WAL mode, thread-local) |
+| `gps_shm.py` | Shared memory IPC for GPS data (replaces Redis) |
+| `setup/pi_optimize.sh` | System optimization script |
+| `systemd/*.service` | All systemd service definitions |
+
+---
+
+## Troubleshooting
+
+### Camera not working
+- Ensure `start_x=1` and `camera_auto_detect=0` in `/boot/firmware/config.txt`
+- Ensure `gpu_mem=64` (below 64 breaks camera ISP)
+- Check: `ls /dev/video0` — should exist
+
+### mediapipe won't install
+- Verify `uname -m` shows `aarch64` (not `armv7l`)
+- If 32-bit: must reflash with 64-bit Bookworm Lite
+
+### pip install "No space left on device"
+- `/tmp` is on tmpfs (64MB) — too small for opencv
+- Fix: `sudo umount /tmp` before pip install, `sudo mount -a` after
+
+### Service fails with "ota-startup.service not found"
+- Remove `Requires=ota-startup.service` from the service file
+- Our updated service files already have this fixed
+
+### Web UI start/stop services not working
+- Ensure sudoers rule exists: `cat /etc/sudoers.d/pi-services`
+- Must contain: `pi ALL=(ALL) NOPASSWD: /usr/bin/systemctl`
+- Must have `chmod 440`
+
+### GPS not reading data
+- Check serial: `ls -la /dev/serial0` or `ls /dev/ttyACM0`
+- Ensure raspi-config has serial hardware enabled, login shell disabled
+- Check `GPS_FORCE_GPSD=0` in service file (we use serial, not gpsd)
 
 ---
 
 ## Quick Reference
 
 ```bash
+# SSH in
+ssh pi@blinksmart.local
+
 # Service management
 sudo systemctl start|stop|restart|status facial1
 journalctl -u facial1 -f
+
+# All services status
+for s in facial1 get_gps_data1 send-data-api upload_images provisioning_ui; do
+    echo -n "$s: "; systemctl is-active $s
+done
 
 # Temperature / throttle
 vcgencmd measure_temp
 vcgencmd get_throttled    # 0x0 = good
 
+# RAM
+free -m
+
 # Database
 sqlite3 /home/pi/facial-tracker-firmware/data/blinksmart.db ".tables"
 
-# GPS shared memory check
+# GPS shared memory
 ls -la /dev/shm/blinksmart_gps
 
-# All services status
-for s in facial1 get_gps_data1 send-data-api upload_images; do
-    echo -n "$s: "; systemctl is-active $s
-done
+# Web UI
+# http://<pi-ip>:5000/
+
+# Delete device password: Sapience@2128
 ```
