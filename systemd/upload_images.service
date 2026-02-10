@@ -9,6 +9,7 @@ User=pi
 Group=pi
 
 # OTA-safe paths
+Environment="DB_PATH=/home/pi/facial-tracker-firmware/data/blinksmart.db"
 Environment=PYTHONPATH=/home/pi/facial-tracker-firmware/current/apps:/home/pi/facial-tracker-firmware/current/libs
 WorkingDirectory=/home/pi/facial-tracker-firmware/current/apps
 
@@ -23,7 +24,7 @@ Nice=15
 CPUWeight=10
 IOSchedulingClass=idle
 IOSchedulingPriority=7
-MemoryMax=40M
+MemoryMax=25M
 
 StandardOutput=journal
 StandardError=journal

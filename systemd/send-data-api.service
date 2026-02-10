@@ -15,6 +15,7 @@ Environment=PYTHONUNBUFFERED=1
 Environment="PYTHONPATH=/home/pi/facial-tracker-firmware/current/apps:/home/pi/facial-tracker-firmware/current/libs"
 
 Environment=SEND_DATA_POLL_INTERVAL=30
+Environment="DB_PATH=/home/pi/facial-tracker-firmware/data/blinksmart.db"
 
 ExecStart=/home/pi/facial-tracker-firmware/venv/bin/python \
           /home/pi/facial-tracker-firmware/current/apps/send_last_second_data.py
@@ -27,7 +28,7 @@ Nice=10
 CPUWeight=20
 IOSchedulingClass=idle
 IOSchedulingPriority=7
-MemoryMax=50M
+MemoryMax=25M
 
 StandardOutput=journal
 StandardError=journal

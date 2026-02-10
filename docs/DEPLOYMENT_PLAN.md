@@ -3,23 +3,28 @@
 ## Hardware Assumptions
 - **Board**: Raspberry Pi Zero 2W (BCM2710A1, 512MB RAM)
 - **OS**: 32-bit Raspberry Pi OS Lite (Bookworm) — `armv7l`
-- **Cooling**: 5V fan (active cooling — better than passive heatsink alone)
+- **Cooling**: 5V fan (active cooling)
 - **Camera**: CSI camera module (OV5647 or similar)
-- **GPS**: UART GPS module via `/dev/ttyAMA0` or gpsd
+- **GPS**: UART GPS module via gpsd
 - **Storage**: SD card (A1 or A2 rated recommended)
-
-## Current Codebase State (main branch)
-- Uses **MySQL** (`mysql-connector-python`) for persistent storage
-- Uses **Redis** for GPS IPC between `get_gps_data.py` and `facil_event_capture.py`
-- Has `pi_optimize.sh` setup script (needs `gpu_mem` fix — currently 16, needs 64 for camera)
-- Systemd services already defined with priority-based resource isolation
-- Dependencies include unused packages: `pygame`, `firebase_admin`
 
 ---
 
-## Execution Plan — 12 Steps
+## RAM Savings Built Into This Deployment
 
-### Step 1: Flash OS & First Boot
+| Change | RAM Saved | Accuracy Risk |
+|--------|-----------|---------------|
+| MySQL -> SQLite | ~50-80MB | None |
+| Remove firebase_admin | ~40-60MB | None |
+| Redis -> shared memory | ~10MB | None |
+| Lazy imports | ~10-15MB | None |
+| Consolidate threads | ~2-3MB | None |
+| systemd MemoryMax tuning | ~30-50MB freed for facial1 | None |
+| **Total** | **~140-210MB** | **Zero** |
+
+---
+
+## Step 1: Flash OS & First Boot
 **Where**: Your laptop/desktop (Raspberry Pi Imager)
 
 1. Download **Raspberry Pi OS Lite (32-bit, Bookworm)** — `raspios-bookworm-armhf-lite`
@@ -31,23 +36,21 @@
    - Username/password: `pi` / `<your-password>`
    - WiFi: Your network SSID + password
    - Locale/timezone as appropriate
-4. Insert SD card into Pi Zero 2W, power on
-5. SSH in:
+4. Insert SD card, power on, SSH in:
    ```bash
    ssh pi@blinksmart.local
    ```
 
 **Verify**:
 ```bash
-uname -m          # Must show: armv7l
+uname -m             # Must show: armv7l
 cat /etc/os-release  # Should show Bookworm
-free -h           # ~430-460MB total RAM
+free -h              # ~430-460MB total RAM
 ```
 
 ---
 
-### Step 2: System Update & Essential Packages
-**Where**: Pi (SSH)
+## Step 2: System Update & Essential Packages
 
 ```bash
 sudo apt update && sudo apt full-upgrade -y
@@ -56,138 +59,109 @@ sudo apt install -y git htop iotop vim python3-pip python3-venv \
     libatlas-base-dev libopenblas-dev libjpeg-dev libpng-dev \
     libhdf5-dev libharfbuzz-dev libwebp-dev libtiff-dev \
     libavcodec-dev libavformat-dev libswscale-dev \
-    v4l-utils gpsd gpsd-clients sqlite3
+    v4l-utils gpsd gpsd-clients sqlite3 stress-ng
 ```
 
-This installs build dependencies for OpenCV/MediaPipe and tools for GPS and monitoring.
+**NOT installing**: `mariadb-server`, `redis-server` — replaced by SQLite + shared memory.
 
 ---
 
-### Step 3: Overclock & Boot Config
-**Where**: Pi (SSH) — edit `/boot/firmware/config.txt`
+## Step 3: Overclock & Boot Config
 
-Since you have a **5V fan** (active cooling), the 1.2GHz overclock with `over_voltage=2` is safe. The fan will keep temps well below throttle thresholds during sustained inference.
-
-**Critical fix**: The existing `pi_optimize.sh` sets `gpu_mem=16`. This is **too low** for the camera — the V4L2/libcamera ISP needs at least 64MB. We must set `gpu_mem=64`.
+Edit `/boot/firmware/config.txt` (or run `setup/pi_optimize.sh`):
 
 ```ini
-# Overclock — safe with 5V fan active cooling
+# Overclock — safe with 5V fan
 arm_freq=1200
 core_freq=500
 over_voltage=2
 
-# GPU memory — camera ISP needs minimum 64MB
-# Do NOT set lower than 64 or camera capture becomes unreliable
+# GPU — camera ISP minimum is 64MB
 gpu_mem=64
 
-# Thermal safety — with fan, 80C soft limit is conservative
+# Thermal safety
 temp_soft_limit=80
 force_turbo=0
 ```
 
-**Why these values with a fan**:
-- `arm_freq=1200`: 20% overclock, stable with active cooling
-- `over_voltage=2`: +50mV, required for stable 1.2GHz operation
-- `core_freq=500`: Helps V4L2 camera pipeline throughput
-- `gpu_mem=64`: Minimum for reliable camera, frees remaining RAM for CPU
-- With a 5V fan, sustained temps should stay around **50-65C** under full load (vs 80C+ without cooling)
+**With 5V fan**: Sustained temps should stay 50-65C under full MediaPipe load. `over_voltage=2` (+50mV) is safe.
 
-**NOT pushing higher** (e.g., 1.3GHz / over_voltage=4):
-- Diminishing returns — extra 100MHz adds ~8% compute but significantly more heat/power draw
-- Pi Zero 2W power regulator can become a bottleneck above 1.2GHz
-- 1.2GHz with stable operation is better than 1.3GHz with occasional crashes
-
-**Reboot and verify**:
 ```bash
 sudo reboot
-# After reboot:
-vcgencmd measure_clock arm    # Should show ~1200000000
-vcgencmd measure_clock core   # Should show ~500000000
-vcgencmd measure_temp         # Should be 35-45C idle with fan
+# Verify:
+vcgencmd measure_clock arm    # ~1200000000
+vcgencmd measure_temp         # 35-45C idle
 ```
 
 ---
 
-### Step 4: Swap & Memory Tuning
-**Where**: Pi (SSH)
+## Step 4: ZRAM Swap + Kernel Tuning
 
-**Option A — ZRAM (recommended, already in pi_optimize.sh)**:
-Uses compressed RAM swap with LZ4. Faster than SD card swap. Effective ~512MB from 256MB physical allocation due to ~2:1 compression.
+Run the optimization script which handles ZRAM, CPU governor, tmpfs, sysctl tuning, and disabling unnecessary services:
 
 ```bash
-# Run the optimization script (we'll fix gpu_mem first)
 sudo bash setup/pi_optimize.sh
+sudo reboot
 ```
 
-**Option B — SD card swap (simpler fallback)**:
-If ZRAM causes issues, use traditional 512MB swap:
+This does:
+- ZRAM swap: 256MB LZ4 compressed (~512MB effective)
+- CPU governor: `performance` (no clock ramping delay)
+- tmpfs: `/tmp` (32MB) + `/var/log` (16MB) in RAM
+- `vm.swappiness=100` (prefer fast ZRAM)
+- Disables: bluetooth, hciuart, triggerhappy
+
+Additionally disable timer services:
 ```bash
-# Edit /etc/dphys-swapfile
-CONF_SWAPSIZE=512
-CONF_MAXSWAP=512
-sudo systemctl restart dphys-swapfile
-```
-
-**Kernel tuning** (already in `pi_optimize.sh`):
-- `vm.swappiness=100` when using ZRAM (swap aggressively to fast compressed RAM)
-- `vm.swappiness=10` when using SD card swap (avoid slow SD I/O)
-- `vm.dirty_background_ratio=1` — flush dirty pages early to prevent I/O stalls
-
----
-
-### Step 5: Disable Unnecessary Services
-**Where**: Pi (SSH)
-
-Already handled by `pi_optimize.sh`, but verify these are disabled:
-
-```bash
-# Verify disabled
-for svc in bluetooth hciuart triggerhappy; do
-    systemctl is-enabled $svc 2>/dev/null && echo "$svc: STILL ENABLED" || echo "$svc: disabled (good)"
-done
-
-# Additionally disable if present:
 sudo systemctl disable --now man-db.timer 2>/dev/null
 sudo systemctl disable --now apt-daily.timer 2>/dev/null
 sudo systemctl disable --now apt-daily-upgrade.timer 2>/dev/null
 ```
 
-**CPU governor** (already in `pi_optimize.sh`):
-```bash
-# Verify performance governor is active
-cat /sys/devices/system/cpu/cpu0/cpufreq/scaling_governor
-# Should show: performance
-```
-
 ---
 
-### Step 6: Deploy Code from Main Branch
-**Where**: Pi (SSH)
+## Step 5: Deploy Code
 
 ```bash
-# Clone the repository
 cd /home/pi
 git clone <your-repo-url> facial-tracker-firmware
 cd facial-tracker-firmware
 git checkout main
 
-# Create directory structure expected by services
-mkdir -p /home/pi/facial-tracker-firmware/data
-mkdir -p /home/pi/facial-tracker-firmware/images/pending
-mkdir -p /home/pi/facial-tracker-firmware/images/events
-mkdir -p /home/pi/facial-tracker-firmware/logs
+# Create directories
+mkdir -p data images/pending images/events logs
 
-# Create the 'current/apps' symlink structure used by systemd services
-# If using OTA bundle system:
-mkdir -p /home/pi/facial-tracker-firmware/current
-ln -sf /home/pi/facial-tracker-firmware /home/pi/facial-tracker-firmware/current/apps
-ln -sf /home/pi/facial-tracker-firmware /home/pi/facial-tracker-firmware/current/libs
+# Create symlinks for systemd service paths
+mkdir -p current
+ln -sf /home/pi/facial-tracker-firmware current/apps
+ln -sf /home/pi/facial-tracker-firmware current/libs
 ```
 
 ---
 
-### Step 7: Python Virtual Environment & Dependencies
-**Where**: Pi (SSH)
+## Step 6: Initialize SQLite Database
+
+```bash
+cd /home/pi/facial-tracker-firmware
+python3 init_sqlite.py
+# Should print: "SQLite database initialized: /home/pi/facial-tracker-firmware/data/blinksmart.db"
+
+# Verify:
+sqlite3 data/blinksmart.db ".tables"
+# Should show: car_data  configure  count_table  device  gps_data  user_info
+```
+
+**If migrating from an existing device with MySQL data**:
+```bash
+# Install mysql-connector temporarily for migration
+pip3 install mysql-connector-python
+python3 migrate_mysql_to_sqlite.py
+# Then uninstall: pip3 uninstall mysql-connector-python
+```
+
+---
+
+## Step 7: Python Virtual Environment & Dependencies
 
 ```bash
 cd /home/pi/facial-tracker-firmware
@@ -195,176 +169,133 @@ python3 -m venv venv --system-site-packages
 source venv/bin/activate
 
 pip install --upgrade pip
-
-# Install dependencies
 pip install -r requirements.txt
 
-# Verify key packages
+# Verify:
 python3 -c "import mediapipe; print('MediaPipe:', mediapipe.__version__)"
 python3 -c "import cv2; print('OpenCV:', cv2.__version__)"
-python3 -c "import numpy; print('NumPy:', numpy.__version__)"
-```
-
-**Note**: The current `requirements.txt` includes `pygame` and `firebase_admin` which are unused. They waste install time and disk space but won't hurt runtime. We can clean them up later.
-
----
-
-### Step 8: Database Setup (MySQL for Now)
-**Where**: Pi (SSH)
-
-The current code uses MySQL. For the initial deployment and performance testing, we'll use MySQL as-is. The SQLite migration (Phase 4 of the guide) can be done after confirming baseline performance.
-
-```bash
-# Install MariaDB
-sudo apt install -y mariadb-server
-
-# Secure and configure
-sudo mysql -e "ALTER USER 'root'@'localhost' IDENTIFIED BY 'raspberry@123';"
-sudo mysql -e "FLUSH PRIVILEGES;"
-
-# Initialize the database schema
-mysql -u root -praspberry@123 < /home/pi/facial-tracker-firmware/init_database.sql
-
-# Verify
-mysql -u root -praspberry@123 -e "USE car; SHOW TABLES;"
+python3 -c "import db_helper; print('db_helper: OK')"
 ```
 
 ---
 
-### Step 9: Redis Setup (for GPS IPC)
-**Where**: Pi (SSH)
-
-The current code uses Redis for real-time GPS data sharing between services.
-
-```bash
-sudo apt install -y redis-server
-
-# Start Redis
-sudo systemctl enable redis-server
-sudo systemctl start redis-server
-
-# Verify
-redis-cli ping  # Should return: PONG
-```
-
----
-
-### Step 10: Configure UART for GPS (if applicable)
-**Where**: Pi (SSH)
+## Step 8: Configure UART for GPS
 
 ```bash
 sudo raspi-config
-# → Interface Options → Serial Port
-# → Login shell over serial: NO
-# → Serial port hardware: YES
+# -> Interface Options -> Serial Port
+# -> Login shell over serial: NO
+# -> Serial port hardware: YES
 
-# If using gpsd:
 sudo systemctl enable gpsd
 sudo systemctl start gpsd
-
-# Verify GPS device
-ls -la /dev/ttyAMA0 /dev/serial0
 ```
 
 ---
 
-### Step 11: Install & Enable Systemd Services
-**Where**: Pi (SSH)
+## Step 9: Device Provisioning
 
 ```bash
-# Copy service files
-sudo cp /home/pi/facial-tracker-firmware/systemd/facial1.service /etc/systemd/system/
-sudo cp /home/pi/facial-tracker-firmware/systemd/get_gps_data1.service /etc/systemd/system/
-sudo cp /home/pi/facial-tracker-firmware/systemd/send-data-api.service /etc/systemd/system/
-sudo cp /home/pi/facial-tracker-firmware/systemd/upload_images.service /etc/systemd/system/
+cd /home/pi/facial-tracker-firmware
 
-# Reload systemd
+# Create .env with your provisioning token
+cp .env.example .env
+nano .env  # Set PROVISIONING_TOKEN
+
+# Run provisioning
+source venv/bin/activate
+python3 device_provisioning.py
+
+# Verify:
+python3 device_provisioning.py --check
+# Should print: PROVISIONED: <device_id>
+```
+
+---
+
+## Step 10: Install Systemd Services
+
+```bash
+sudo cp systemd/facial1.service /etc/systemd/system/
+sudo cp systemd/get_gps_data1.service /etc/systemd/system/
+sudo cp systemd/send-data-api.service /etc/systemd/system/
+sudo cp systemd/upload_images.service /etc/systemd/system/
+
 sudo systemctl daemon-reload
 
-# Enable services (they will start on boot)
-sudo systemctl enable facial1.service
-sudo systemctl enable get_gps_data1.service
-sudo systemctl enable send-data-api.service
-sudo systemctl enable upload_images.service
+# Enable all
+sudo systemctl enable facial1 get_gps_data1 send-data-api upload_images
 
-# Start facial tracking first (the critical service)
-sudo systemctl start facial1.service
-
-# Check it's running
-sudo systemctl status facial1.service
-journalctl -u facial1.service -f --no-pager -n 50
+# Start in priority order
+sudo systemctl start facial1
+sleep 3
+sudo systemctl start get_gps_data1
+sleep 2
+sudo systemctl start send-data-api upload_images
 ```
-
-**Start order**:
-1. `facial1.service` — start first, verify it runs
-2. `get_gps_data1.service` — start second
-3. `send-data-api.service` — start third
-4. `upload_images.service` — start last
 
 ---
 
-### Step 12: Performance Testing & Monitoring
-**Where**: Pi (SSH)
+## Step 11: Verify All Services Running
 
-This is the key step — measuring actual facial tracking performance.
-
-#### 12a. Thermal Monitoring (continuous)
 ```bash
-# Terminal 1 — monitor temps
-watch -n 2 'vcgencmd measure_temp && vcgencmd get_throttled'
+# Quick status check
+for s in facial1 get_gps_data1 send-data-api upload_images; do
+    echo -n "$s: "; systemctl is-active $s
+done
+
+# Check facial tracking logs
+journalctl -u facial1 -f --no-pager -n 50
 ```
 
-**Expected with 5V fan**:
-- Idle: 35-45C
-- Under facial tracking load: 50-65C
-- `get_throttled` should always show `0x0` (no throttling)
+---
 
-#### 12b. RAM Usage
+## Step 12: Performance Testing
+
+### 12a — Thermal (continuous in background)
+```bash
+watch -n 2 'vcgencmd measure_temp && vcgencmd get_throttled'
+# With fan: 50-65C under load, get_throttled = 0x0
+```
+
+### 12b — RAM Usage
 ```bash
 free -h
-# Expected with MySQL + Redis running:
-#   Total: ~430MB (64MB reserved for GPU)
-#   Used:  ~300-350MB
-#   Free:  ~80-130MB
-#   Swap:  256MB ZRAM (should show low usage)
+# Expected (no MySQL, no Redis):
+#   Total: ~430MB
+#   Used:  ~200-250MB
+#   Free:  ~180-230MB
+#   Swap:  256MB ZRAM (near zero usage)
 
-# Per-process breakdown
-ps aux --sort=-%mem | head -15
+ps aux --sort=-%mem | head -10
 ```
 
-#### 12c. Facial Tracking FPS
+### 12c — Facial Tracking FPS
 ```bash
-# Watch detection logs
-journalctl -u facial1.service -f | grep -i "performance\|fps\|frame\|latency"
-
-# Expected targets:
-#   - Average inference: <100ms/frame at 1.2GHz
-#   - Effective FPS: 10+ (target is 10)
-#   - Detection confidence: stable at 0.5 threshold
+journalctl -u facial1 -f | grep -i "performance\|fps\|frame"
+# Target: <100ms/frame, 10+ FPS
 ```
 
-#### 12d. CPU Load Distribution
+### 12d — CPU Distribution
 ```bash
 htop
-# Expected:
-#   - facil_event_capture.py: 60-80% across cores (this is normal)
-#   - get_gps_data.py: 2-5%
-#   - send_last_second_data.py: <1% (wakes every 30s)
-#   - upload_images.py: <1% (I/O bound, idle class)
-#   - mysqld: 1-3%
-#   - redis-server: <1%
+# facil_event_capture.py: 60-80%
+# get_gps_data.py: 2-5%
+# Everything else: <1%
 ```
 
-#### 12e. Stress Test Facial Tracking
+### 12e — Sustained Stress Test
 ```bash
-# Let it run for 10+ minutes with camera pointing at a face
-# Monitor for:
-# 1. Memory leaks (RSS growing over time)
-# 2. Thermal throttling (vcgencmd get_throttled != 0x0)
-# 3. FPS drops below target
-# 4. OOM kills (dmesg | grep -i oom)
+# Let facial tracking run 10+ minutes, then check:
+dmesg | grep -i oom         # No OOM kills
+vcgencmd get_throttled      # Still 0x0
+free -h                     # Stable RAM usage
+```
 
-# Full monitoring command
+### 12f — Full monitoring dashboard
+```bash
+bash monitor.sh
+# Or:
 watch -n 5 'echo "=== TEMP ===" && vcgencmd measure_temp && \
 echo "=== THROTTLE ===" && vcgencmd get_throttled && \
 echo "=== RAM ===" && free -m | head -3 && \
@@ -373,51 +304,40 @@ echo "=== TOP PROCS ===" && ps aux --sort=-%mem | head -8'
 
 ---
 
-## Post-Baseline Optimization Path
+## Expected RAM Budget (Post-Optimization)
 
-Once the baseline is working and you have performance numbers, proceed with these optimizations **one at a time**, measuring impact after each:
-
-| Priority | Optimization | Expected Impact | Risk |
-|----------|-------------|-----------------|------|
-| 1 | Fix `gpu_mem=64` in pi_optimize.sh | Reliable camera capture | Low |
-| 2 | Clean requirements.txt (remove pygame, firebase) | Faster installs, less disk | None |
-| 3 | SQLite migration (replace MySQL) | Free ~50-80MB RAM | Medium |
-| 4 | Shared memory GPS IPC (replace Redis) | Free ~10-15MB RAM | Medium |
-| 5 | Camera MJPEG mode | Less CPU for frame decode | Low |
-| 6 | LED controller rewrite (non-blocking) | Fewer threads | Low |
-| 7 | Lazy imports | Faster startup, less peak RAM | Low |
+| Component | RAM Usage |
+|-----------|-----------|
+| OS (32-bit Lite, Bookworm) | ~45MB |
+| GPU reserved | 64MB |
+| **facial1.service** (MediaPipe + OpenCV) | ~160-200MB |
+| get_gps_data1.service | ~15-20MB |
+| upload_images.service | ~15-20MB |
+| send-data-api.service | ~15-20MB |
+| SQLite (embedded, no daemon) | ~2MB |
+| Shared memory GPS IPC | <1MB |
+| **Total Used** | **~320-370MB** |
+| **Free RAM** | **~60-110MB** |
+| **Swap Available** | **~512MB (ZRAM)** |
 
 ---
 
-## Quick Reference: Key Paths on the Pi
-
-| Path | Purpose |
-|------|---------|
-| `/home/pi/facial-tracker-firmware/` | Main code directory |
-| `/home/pi/facial-tracker-firmware/venv/` | Python virtual environment |
-| `/home/pi/facial-tracker-firmware/data/` | SQLite DB (future) |
-| `/home/pi/facial-tracker-firmware/images/` | Event captures |
-| `/home/pi/facial-tracker-firmware/current/apps` | Symlink used by services |
-| `/boot/firmware/config.txt` | Boot config (overclock, GPU mem) |
-| `/etc/systemd/system/` | Service files |
-| `/dev/shm/` | Shared memory (future GPS IPC) |
-
-## Quick Reference: Key Commands
+## Quick Reference
 
 ```bash
 # Service management
-sudo systemctl start|stop|restart|status facial1.service
-journalctl -u facial1.service -f
+sudo systemctl start|stop|restart|status facial1
+journalctl -u facial1 -f
 
 # Temperature / throttle
 vcgencmd measure_temp
 vcgencmd get_throttled    # 0x0 = good
 
-# RAM
-free -h
+# Database
+sqlite3 /home/pi/facial-tracker-firmware/data/blinksmart.db ".tables"
 
-# CPU frequency
-vcgencmd measure_clock arm
+# GPS shared memory check
+ls -la /dev/shm/blinksmart_gps
 
 # All services status
 for s in facial1 get_gps_data1 send-data-api upload_images; do

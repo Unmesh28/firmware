@@ -14,10 +14,7 @@ import fcntl
 from datetime import datetime
 from queue import Queue
 import threading
-import redis
 import RPi.GPIO as GPIO
-import base64
-import requests
 from store_locally import add_gps_data
 from log import log_info, log_error
 from get_device_id import get_device_id_from_db, get_auth_key_from_db
@@ -25,7 +22,7 @@ from get_user_info import get_user_info
 from get_configure import get_configure
 from facial_tracking.facialTracking import FacialTracker
 import facial_tracking.conf as conf
-from blnk_led import stop_blinking, start_blinking, refresh_blinking
+from blnk_led import stop_blinking, start_blinking, refresh_blinking, update_led
 from buzzer_controller import buzz_for, start_continuous_buzz, stop_continuous_buzz
 from event_capture import init_event_capture, get_event_buffer, shutdown_event_capture
 
@@ -92,8 +89,9 @@ def acquire_lock():
         print("Kill existing process first: pkill -f facil_event_capture.py")
         sys.exit(1)
 
-# Initialize Redis client
-redis_client = redis.Redis(host='127.0.0.1', port=6379)
+# Initialize shared memory GPS reader (replaces Redis)
+from gps_shm import GPSReader
+gps_reader = GPSReader()
 
 # Get device information from the database
 device_id = get_device_id_from_db()
@@ -141,6 +139,8 @@ def capture_and_send_verification_image(frame, lat, long2, speed, acc):
     This verifies that the registered driver is still driving the vehicle.
     """
     try:
+        import base64
+        import requests
         # Encode frame to JPEG
         encode_param = [cv2.IMWRITE_JPEG_QUALITY, 85]
         _, encoded = cv2.imencode('.jpg', frame, encode_param)
@@ -242,7 +242,8 @@ def map_driver_status(status):
     return status_map.get(status, status)
 
 def decode_or_default(value, default='0'):
-    return value.decode() if value else default
+    """Legacy helper kept for compatibility."""
+    return value.decode() if isinstance(value, bytes) and value else str(value) if value else default
 
 _last_idle_send_time = 0
 
@@ -347,12 +348,9 @@ def main():
     # 15-minute interval driver verification
     last_verification_time = 0
 
-    # Redis pipeline for batched reads (1 round-trip instead of 4)
-    redis_pipe = redis_client.pipeline(transaction=False)
-
-    # GPS cache to avoid redundant Redis reads when idle
-    last_redis_read_time = 0
-    redis_read_interval = 0.5  # Read Redis at most 2x/sec when idle
+    # GPS cache — read from shared memory at most 2x/sec
+    last_gps_read_time = 0
+    gps_read_interval = 0.5
     cached_speed = '0'
     cached_lat = '0.0'
     cached_long = '0.0'
@@ -378,18 +376,14 @@ def main():
         while cap.isOpened():
             current_time = time.time()
 
-            # Batch Redis reads using pipeline (1 round-trip instead of 4)
-            if current_time - last_redis_read_time >= redis_read_interval:
-                last_redis_read_time = current_time
-                redis_pipe.get('speed')
-                redis_pipe.get('lat')
-                redis_pipe.get('long')
-                redis_pipe.get('acc')
-                results = redis_pipe.execute()
-                cached_speed = decode_or_default(results[0])
-                cached_lat = decode_or_default(results[1], '0.0')
-                cached_long = decode_or_default(results[2], '0.0')
-                cached_acc = decode_or_default(results[3], '0')
+            # Read GPS from shared memory (single read, no network round-trip)
+            if current_time - last_gps_read_time >= gps_read_interval:
+                last_gps_read_time = current_time
+                lat_f, lon_f, speed_i, acc_f, _ts = gps_reader.read()
+                cached_speed = str(speed_i)
+                cached_lat = str(lat_f) if lat_f != 0.0 else '0.0'
+                cached_long = str(lon_f) if lon_f != 0.0 else '0.0'
+                cached_acc = str(acc_f)
 
             speed = cached_speed
             lat = cached_lat

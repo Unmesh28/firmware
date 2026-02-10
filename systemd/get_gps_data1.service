@@ -13,6 +13,7 @@ Environment=GPS_DEBUG_LOG_RAW=0
 Environment=GPS_FORCE_GPSD=1
 Environment=MQTT_BROKER_HOST=api.copilotai.click
 Environment=MQTT_PUBLISH_INTERVAL=2.0
+Environment="DB_PATH=/home/pi/facial-tracker-firmware/data/blinksmart.db"
 
 # OTA-safe paths
 Environment=PYTHONPATH=/home/pi/facial-tracker-firmware/current/apps:/home/pi/facial-tracker-firmware/current/libs
@@ -29,7 +30,7 @@ Nice=5
 CPUWeight=30
 IOSchedulingClass=idle
 IOSchedulingPriority=7
-MemoryMax=50M
+MemoryMax=30M
 
 StandardOutput=journal
 StandardError=journal

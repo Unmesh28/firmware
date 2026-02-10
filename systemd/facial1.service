@@ -37,6 +37,9 @@ Environment="OMP_NUM_THREADS=2"
 Environment="TF_NUM_INTRAOP_THREADS=2"
 Environment="TF_NUM_INTEROP_THREADS=1"
 
+# SQLite database path
+Environment="DB_PATH=/home/pi/facial-tracker-firmware/data/blinksmart.db"
+
 ExecStart=/home/pi/facial-tracker-firmware/venv/bin/python \
           /home/pi/facial-tracker-firmware/current/apps/facil_event_capture.py
 
@@ -44,7 +47,8 @@ Restart=always
 RestartSec=5
 
 # Set process scheduling priority (lower nice = higher priority)
-Nice=-5
+# HIGHEST priority — this is the safety-critical service
+Nice=-10
 
 # Highest I/O priority — swap page-ins happen faster than other services
 IOSchedulingClass=realtime
@@ -53,8 +57,10 @@ IOSchedulingPriority=0
 # Give facial detection maximum CPU share when competing with other services
 CPUWeight=10000
 
-# Limit memory to prevent OOM killing other services
-MemoryMax=350M
+# Memory: with MySQL/Redis gone, we have more headroom
+# Total RAM ~440MB, OS ~45MB, GPS ~15MB -> ~380MB available
+MemoryMax=320M
+MemoryHigh=280M
 
 StandardOutput=journal
 StandardError=journal
