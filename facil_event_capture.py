@@ -234,28 +234,15 @@ def capture_and_send_verification_image(frame, lat, long2, speed, acc):
 FONT = cv2.FONT_HERSHEY_SIMPLEX
 FONT_SCALE = 0.4
 FONT_THICKNESS = 1
-_padding_x = 4
-_padding_y = 3
-_top_left = (15, 15)
 
 def save_image(frame, folder_path, speed, lat2, long2, driver_status):
-    """Save annotated image with driver status overlay and footer.
-    Filename includes metadata for upload_images.py parsing."""
+    """Save image with footer overlay. Filename includes metadata for upload_images.py parsing."""
     lat2 = round(float(lat2), 4)
     long2 = round(float(long2), 4)
     timestamp_obj = datetime.now()
     timestamp = timestamp_obj.strftime("%Y-%m-%d %H:%M:%S")
     filename_time = timestamp_obj.strftime("%Y%m%d_%H%M%S%f")
     image_file = os.path.join(folder_path, f"{filename_time}_{driver_status}_{lat2}_{long2}_{speed}.jpg")
-
-    # Draw driver status box at top
-    driver_text = f"Driver Status: {driver_status}"
-    (text_width, text_height), _ = cv2.getTextSize(driver_text, FONT, FONT_SCALE, FONT_THICKNESS)
-    bottom_right = (_top_left[0] + text_width + 2 * _padding_x, _top_left[1] + text_height + 2 * _padding_y)
-    cv2.rectangle(frame, _top_left, bottom_right, (139, 104, 0), -1)
-    cv2.rectangle(frame, _top_left, bottom_right, (0, 0, 0), 1)
-    text_position = (_top_left[0] + _padding_x, _top_left[1] + text_height + _padding_y - 2)
-    cv2.putText(frame, driver_text, text_position, FONT, FONT_SCALE, (255, 255, 255), FONT_THICKNESS, cv2.LINE_AA)
 
     # Draw footer with metadata
     h, w = frame.shape[:2]
