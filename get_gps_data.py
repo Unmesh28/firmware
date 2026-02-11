@@ -101,7 +101,7 @@ def _shm_get_float(key):
         reader = GPSReader()
         lat, lon, speed, acc, ts = reader.read()
         reader.close()
-        key_map = {'lat': lat, 'long': lon, 'acc': acc}
+        key_map = {'lat': lat, 'long': lon, 'speed': speed, 'acc': acc}
         return key_map.get(key)
     except Exception:
         return None
@@ -131,18 +131,16 @@ def _debug_compare_after_write(lat, lon, speed, acc, source, raw_line=None):
 
     r_lat = _shm_get_float('lat')
     r_lon = _shm_get_float('long')
-    r_speed = _shm_get_int('speed')
+    r_speed = _shm_get_float('speed')
     r_acc = _shm_get_float('acc')
-
-    speed_int = int(speed) if speed is not None else None
 
     mismatches = []
     if r_lat is None or abs(r_lat - float(lat)) > GPS_DEBUG_LATLON_TOL:
         mismatches.append(f'lat(parsed={lat}, shm={r_lat})')
     if r_lon is None or abs(r_lon - float(lon)) > GPS_DEBUG_LATLON_TOL:
         mismatches.append(f'long(parsed={lon}, shm={r_lon})')
-    if r_speed is None or (speed_int is not None and r_speed != speed_int):
-        mismatches.append(f'speed(parsed_int={speed_int}, shm={r_speed})')
+    if r_speed is None or (speed is not None and abs(r_speed - float(speed)) > 0.1):
+        mismatches.append(f'speed(parsed={speed}, shm={r_speed})')
     if r_acc is None or abs(r_acc - float(acc)) > GPS_DEBUG_ACC_TOL:
         mismatches.append(f'acc(parsed={acc}, shm={r_acc})')
 
@@ -175,11 +173,10 @@ def _ecef_to_latlon(x, y, z):
 # ------------------------ PARSE GPS -------------------------
 def parse_gps_with_pynmea(data):
     try:
-        # print(f"Raw GPS data: {data}")
         parsed_data = pynmea2.parse(data)
         current_datetime = datetime.datetime.now()
 
-        speed = 0.0
+        speed = None  # None = sentence has no speed data (e.g. GGA)
         parsed_timestamp = None
         lat = None
         lon = None
@@ -196,7 +193,7 @@ def parse_gps_with_pynmea(data):
         if hasattr(parsed_data, 'longitude'):
              lon = parsed_data.longitude
 
-        # Extract speed based on sentence type
+        # Extract speed — only RMC and VTG sentences carry speed data
         if isinstance(parsed_data, pynmea2.types.talker.RMC):
             # RMC has speed in knots
             if parsed_data.spd_over_grnd is not None:
@@ -204,6 +201,8 @@ def parse_gps_with_pynmea(data):
                    speed = float(parsed_data.spd_over_grnd) * 1.852 # Knots to km/h
                 except (ValueError, TypeError):
                    speed = 0.0
+            else:
+                speed = 0.0
 
         elif isinstance(parsed_data, pynmea2.types.talker.VTG):
             # VTG has speed in km/h
@@ -212,12 +211,13 @@ def parse_gps_with_pynmea(data):
                     speed = float(parsed_data.spd_over_grnd_kmh)
                 except (ValueError, TypeError):
                     speed = 0.0
+             else:
+                speed = 0.0
 
         return lat, lon, parsed_timestamp, speed
 
     except Exception as e:
-        # print(f"Error parsing GPS data: {e}")
-        return None, None, None, 0.0
+        return None, None, None, None
 
 
 # ------------------------ CALCULATIONS -------------------------
@@ -370,7 +370,7 @@ def read_from_gpsd():
 
                 _debug_log_sample(source='gpsd', raw_line=new_data if GPS_DEBUG_LOG_RAW else None, lat=lat2, lon=lon2, speed=speed, acc=acc)
 
-                gps_writer.write(lat2, lon2, int(speed) if 0 <= speed < 300 else 0, acc, time.time())
+                gps_writer.write(lat2, lon2, speed if 0 <= speed < 300 else 0.0, acc, time.time())
 
                 _debug_compare_after_write(lat2, lon2, speed, acc, source='gpsd', raw_line=new_data if GPS_DEBUG_LOG_RAW else None)
 
@@ -403,8 +403,8 @@ def read_gps_data():
 
     logging.info('Reading GPS data from serial device: %s', SERIAL_DEVICE_PATH)
 
-    # lat1, lon1, t1 = 0, 0, datetime.datetime.now().replace(tzinfo=None)
     prev_speed = 0.0
+    last_known_speed = 0.0  # Retains last valid speed from RMC/VTG
     global last_gps_write
     THROTTLE_SECONDS = GPS_WRITE_THROTTLE_SECONDS
 
@@ -433,6 +433,12 @@ def read_gps_data():
 
             lat2, lon2, t2_parsed, speed = parse_gps_with_pynmea(data)
 
+            # Only update speed when sentence actually has speed (RMC/VTG).
+            # GGA/GSA etc. return speed=None — keep last known speed.
+            if speed is not None:
+                last_known_speed = speed
+            speed = last_known_speed
+
             # Use current time if parsed time is not available
             current_timestamp = datetime.datetime.now()
 
@@ -444,19 +450,18 @@ def read_gps_data():
                 continue
 
             if lat2 != 0 and lon2 != 0:
-                gps_writer.write(lat2, lon2, int(speed) if 0 <= speed < 300 else 0, acc, time.time())
+                gps_writer.write(lat2, lon2, speed, acc, time.time())
 
                 _debug_compare_after_write(lat2, lon2, speed, acc, source='serial', raw_line=data)
 
                 _publish_gps_mqtt(lat2, lon2, speed, acc)
             else:
-                gps_writer.write(0.0, 0.0, int(speed) if 0 <= speed < 300 else 0, acc, time.time())
+                gps_writer.write(0.0, 0.0, speed, acc, time.time())
 
                 if time.time() - last_gps_write >= THROTTLE_SECONDS:
                     store_worker.submit_latest(lat2, lon2, speed)
                     last_gps_write = time.time()
 
-            # lat1, lon1, t1 = lat2, lon2, t2
             last_timestamp = current_timestamp
             prev_speed = speed
 

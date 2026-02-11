@@ -5,10 +5,10 @@ Replaces Redis for real-time GPS values (lat, lon, speed, acc).
 Layout (40 bytes):
   - lat:       double (8 bytes)  offset 0
   - lon:       double (8 bytes)  offset 8
-  - speed:     int32  (4 bytes)  offset 16
-  - acc:       double (8 bytes)  offset 20
-  - timestamp: double (8 bytes)  offset 28
-  - Total: 36 bytes (padded to 64)
+  - speed:     double (8 bytes)  offset 16
+  - acc:       double (8 bytes)  offset 24
+  - timestamp: double (8 bytes)  offset 32
+  - Total: 40 bytes (padded to 64)
 """
 import struct
 import mmap
@@ -16,7 +16,7 @@ import os
 
 SHM_PATH = "/dev/shm/blinksmart_gps"  # tmpfs — in RAM, no disk I/O
 SHM_SIZE = 64  # Padded for alignment
-STRUCT_FMT = 'ddidd'  # lat, lon, speed, acc, timestamp
+STRUCT_FMT = 'ddddd'  # lat, lon, speed, acc, timestamp
 STRUCT_SIZE = struct.calcsize(STRUCT_FMT)
 
 
@@ -38,7 +38,7 @@ class GPSWriter:
         self._shm.seek(0)
         self._shm.write(struct.pack(STRUCT_FMT,
                                     float(lat), float(lon),
-                                    int(speed), float(acc),
+                                    float(speed), float(acc),
                                     float(timestamp)))
 
     def close(self):
@@ -57,7 +57,7 @@ class GPSReader:
         self._shm.seek(0)
         data = self._shm.read(STRUCT_SIZE)
         if len(data) < STRUCT_SIZE:
-            return 0.0, 0.0, 0, 0.0, 0.0
+            return 0.0, 0.0, 0.0, 0.0, 0.0
         lat, lon, speed, acc, timestamp = struct.unpack(STRUCT_FMT, data)
         return lat, lon, speed, acc, timestamp
 

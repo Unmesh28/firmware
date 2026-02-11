@@ -439,8 +439,8 @@ def main():
             # Read GPS from shared memory (single read, no network round-trip)
             if current_time - last_gps_read_time >= gps_read_interval:
                 last_gps_read_time = current_time
-                lat_f, lon_f, speed_i, acc_f, _ts = gps_reader.read()
-                cached_speed = str(speed_i)
+                lat_f, lon_f, speed_f, acc_f, _ts = gps_reader.read()
+                cached_speed = str(int(speed_f))
                 cached_lat = str(lat_f) if lat_f != 0.0 else '0.0'
                 cached_long = str(lon_f) if lon_f != 0.0 else '0.0'
                 cached_acc = str(acc_f)
