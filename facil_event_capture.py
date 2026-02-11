@@ -129,9 +129,33 @@ event_buffer = init_event_capture(
 VERIFICATION_INTERVAL_SECONDS = 15 * 60  # 15 minutes
 VERIFICATION_API_URL = "https://api.copilotai.click/api/driver-verification/capture"
 
-# NoFace buzzer settings
+# NoFace buzzer settings (defaults — overridden by DB config)
 NO_FACE_THRESHOLD = 2.0  # seconds before buzzing
 BUZZER_DURATION = 1.7    # seconds
+
+# --- Runtime settings from DB (re-read periodically) ---
+_settings_last_read = 0
+_settings_read_interval = 30  # re-read every 30 seconds
+led_blink_enabled = True
+noface_enabled = False
+noface_threshold = 2.0
+
+def _reload_settings():
+    """Re-read settings from DB so changes take effect without restart."""
+    global led_blink_enabled, noface_enabled, noface_threshold, _settings_last_read
+    now = time.time()
+    if now - _settings_last_read < _settings_read_interval:
+        return
+    _settings_last_read = now
+    try:
+        val = get_configure('led_blink_enabled')
+        led_blink_enabled = val != '0' if val is not None else True
+        val = get_configure('noface_enabled')
+        noface_enabled = val == '1' if val is not None else False
+        val = get_configure('noface_threshold')
+        noface_threshold = float(val) if val else 2.0
+    except Exception:
+        pass
 
 def capture_and_send_verification_image(frame, lat, long2, speed, acc):
     """
@@ -372,9 +396,16 @@ def main():
     log_info(f"Capture: {conf.FRAME_W}x{conf.FRAME_H}, Detection: {DETECT_W}x{DETECT_H}, HEADLESS: {conf.HEADLESS}, refine_landmarks: {conf.REFINE_LANDMARKS}")
     log_info(f"Driver verification interval: {VERIFICATION_INTERVAL_SECONDS // 60} minutes")
 
+    # Load settings from DB on startup
+    _reload_settings()
+    log_info(f"Settings: LED blink={led_blink_enabled}, NoFace alert={noface_enabled}, NoFace threshold={noface_threshold}s")
+
     try:
         while cap.isOpened():
             current_time = time.time()
+
+            # Re-read settings from DB periodically (every 30s)
+            _reload_settings()
 
             # Read GPS from shared memory (single read, no network round-trip)
             if current_time - last_gps_read_time >= gps_read_interval:
@@ -446,12 +477,12 @@ def main():
                 if facial_tracker.eyes_status == 'eye closed':
                     driver_status = 'Sleeping'
                     start_continuous_buzz()   # Refreshes watchdog each frame
-                    refresh_blinking()        # Refreshes LED watchdog each frame
-                    # Start blinking only if not already blinking (avoid thread storm)
-                    with _blink_thread_lock:
-                        if _blink_thread is None or not _blink_thread.is_alive():
-                            _blink_thread = threading.Thread(target=start_blinking, daemon=True)
-                            _blink_thread.start()
+                    if led_blink_enabled:
+                        refresh_blinking()        # Refreshes LED watchdog each frame
+                        with _blink_thread_lock:
+                            if _blink_thread is None or not _blink_thread.is_alive():
+                                _blink_thread = threading.Thread(target=start_blinking, daemon=True)
+                                _blink_thread.start()
                     # Save annotated image (throttled 1/sec, queued to worker)
                     if current_time - last_save_time >= SAVE_IMAGE_INTERVAL:
                         last_save_time = current_time
@@ -460,11 +491,12 @@ def main():
                 elif facial_tracker.yawn_status == 'yawning':
                     driver_status = 'Yawning'
                     start_continuous_buzz()   # Refreshes watchdog each frame
-                    refresh_blinking()        # Refreshes LED watchdog each frame
-                    with _blink_thread_lock:
-                        if _blink_thread is None or not _blink_thread.is_alive():
-                            _blink_thread = threading.Thread(target=start_blinking, daemon=True)
-                            _blink_thread.start()
+                    if led_blink_enabled:
+                        refresh_blinking()        # Refreshes LED watchdog each frame
+                        with _blink_thread_lock:
+                            if _blink_thread is None or not _blink_thread.is_alive():
+                                _blink_thread = threading.Thread(target=start_blinking, daemon=True)
+                                _blink_thread.start()
                     if current_time - last_save_time >= SAVE_IMAGE_INTERVAL:
                         last_save_time = current_time
                         _enqueue_save_image(frame.copy(), folder_path, speed, lat, long2, driver_status)
@@ -489,13 +521,12 @@ def main():
                 # Calculate how long NoFace has persisted
                 no_face_duration = current_time - no_face_start_time
 
-                # TODO: NoFace buzzer temporarily disabled for testing
-                # # Buzz every 2 seconds continuously while NoFace persists
-                # if no_face_duration >= NO_FACE_THRESHOLD:
-                #     buzz_for(BUZZER_DURATION)  # Self-limiting: runs for duration then stops
-                #     no_face_buzzer_triggered = True
-                #     log_info(f"NoFace detected for {no_face_duration:.1f}s - buzzer activated")
-                #     no_face_start_time = current_time  # Reset timer for next interval
+                # Buzz when NoFace persists beyond threshold (configurable via Settings)
+                if noface_enabled and no_face_duration >= noface_threshold:
+                    buzz_for(BUZZER_DURATION)
+                    no_face_buzzer_triggered = True
+                    log_info(f"NoFace detected for {no_face_duration:.1f}s - buzzer activated")
+                    no_face_start_time = current_time  # Reset timer for next interval
 
             # Add full-res frame to event buffer at throttled rate (2 FPS)
             # Uses 640x480 for image quality; raw bytes stored, JPEG encoding in save worker

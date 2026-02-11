@@ -6,6 +6,9 @@ DEFAULT_CONFIG = {
     'speed': '20',  # Activation speed threshold (km/h)
     'gps_retention_days': '30',  # GPS data retention in active days
     'image_retention_days': '15',  # Image retention in days
+    'led_blink_enabled': '1',  # LED blink on sleep/yawn (1=on, 0=off)
+    'noface_enabled': '0',  # NoFace buzzer alert (1=on, 0=off)
+    'noface_threshold': '2',  # Seconds before NoFace buzzer triggers
 }
 
 

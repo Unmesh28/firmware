@@ -80,6 +80,9 @@ def init_db():
     c.execute("INSERT OR IGNORE INTO configure (config_key, config_value) VALUES ('upload_interval', '30')")
     c.execute("INSERT OR IGNORE INTO configure (config_key, config_value) VALUES ('gps_retention_days', '30')")
     c.execute("INSERT OR IGNORE INTO configure (config_key, config_value) VALUES ('image_retention_days', '15')")
+    c.execute("INSERT OR IGNORE INTO configure (config_key, config_value) VALUES ('led_blink_enabled', '1')")
+    c.execute("INSERT OR IGNORE INTO configure (config_key, config_value) VALUES ('noface_enabled', '0')")
+    c.execute("INSERT OR IGNORE INTO configure (config_key, config_value) VALUES ('noface_threshold', '2')")
 
     conn.commit()
     conn.close()
