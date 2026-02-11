@@ -302,7 +302,7 @@ class EventFrameBuffer:
                     f"Speed:{frame_data.speed} Km/h"
                 ]
                 cv2.rectangle(frame, (0, h - 30), (w, h), (255, 0, 0), -1)
-                x = 5
+                x = 15
                 for text in footer_text:
                     cv2.putText(frame, text, (x, h - 15), self.FONT, self.FONT_SCALE, (255, 255, 255), self.FONT_THICKNESS, cv2.LINE_AA)
                     (tw, _), _ = cv2.getTextSize(text, self.FONT, self.FONT_SCALE, self.FONT_THICKNESS)
