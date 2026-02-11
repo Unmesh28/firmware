@@ -45,6 +45,7 @@ sed -i '/^gpu_mem=/d' "$CONFIG"
 sed -i '/^start_x=/d' "$CONFIG"
 sed -i '/^camera_auto_detect=/d' "$CONFIG"
 sed -i '/^#.*pi_optimize/d' "$CONFIG"
+sed -i '/^dtparam=watchdog=/d' "$CONFIG"
 
 # Append our settings
 cat >> "$CONFIG" << 'BOOT_EOF'
@@ -61,6 +62,8 @@ camera_auto_detect=0
 # gpu_mem=64 is minimum for camera ISP — below this, capture is unreliable
 temp_soft_limit=80
 force_turbo=0
+# Hardware watchdog: reboots Pi if kernel hangs (15s timeout)
+dtparam=watchdog=on
 BOOT_EOF
 
 echo "  arm_freq=1200 (20% overclock, stable with active fan cooling)"
@@ -230,6 +233,21 @@ done
 echo "  Disabled: apt-daily timers"
 
 # ─────────────────────────────────────────────
+# 7. HARDWARE WATCHDOG
+# ─────────────────────────────────────────────
+echo ""
+echo "[7] Enabling hardware watchdog (auto-reboot on system hang)"
+
+# systemd runtime watchdog: reboots Pi if kernel/systemd hangs for 15s
+mkdir -p /etc/systemd/system.conf.d
+cat > /etc/systemd/system.conf.d/watchdog.conf << 'WD_EOF'
+[Manager]
+RuntimeWatchdogSec=15
+RebootWatchdogSec=10min
+WD_EOF
+echo "  RuntimeWatchdogSec=15 (reboot if kernel hangs 15s)"
+
+# ─────────────────────────────────────────────
 # SUMMARY
 # ─────────────────────────────────────────────
 echo ""
@@ -243,6 +261,7 @@ echo "  [x] CPU governor: performance (no clock ramping)"
 echo "  [x] tmpfs: /tmp (64MB) + /var/log (16MB) on RAM"
 echo "  [x] Kernel: tuned vm.swappiness, dirty ratios"
 echo "  [x] Disabled unused services (bluetooth, avahi, etc.)"
+echo "  [x] Hardware watchdog: auto-reboot on 15s system hang"
 echo ""
 
 if [ "$REBOOT_NEEDED" -eq 1 ]; then

@@ -11,9 +11,30 @@ import sys
 import time
 import gc
 import fcntl
+import socket
 from datetime import datetime
 from queue import Queue
 import threading
+
+
+# --- systemd watchdog: notify systemd we're alive ---
+_sd_notify_sock = None
+
+def _sd_notify(msg):
+    """Send sd_notify message to systemd (READY=1, WATCHDOG=1, etc.)."""
+    global _sd_notify_sock
+    addr = os.getenv('NOTIFY_SOCKET')
+    if not addr:
+        return
+    try:
+        if _sd_notify_sock is None:
+            _sd_notify_sock = socket.socket(socket.AF_UNIX, socket.SOCK_DGRAM)
+            if addr[0] == '@':
+                addr = '\0' + addr[1:]
+            _sd_notify_sock.connect(addr)
+        _sd_notify_sock.sendall(msg.encode())
+    except Exception:
+        _sd_notify_sock = None
 import RPi.GPIO as GPIO
 from store_locally import add_gps_data
 from log import log_info, log_error
@@ -400,9 +421,21 @@ def main():
     _reload_settings()
     log_info(f"Settings: LED blink={led_blink_enabled}, NoFace alert={noface_enabled}, NoFace threshold={noface_threshold}s")
 
+    # Tell systemd we're ready (for Type=notify)
+    _sd_notify('READY=1')
+
+    # Watchdog ping interval (ping every 10s, systemd timeout is 30s)
+    _last_watchdog_ping = 0
+    _watchdog_interval = 10
+
     try:
         while cap.isOpened():
             current_time = time.time()
+
+            # Ping systemd watchdog — proves main loop is alive
+            if current_time - _last_watchdog_ping >= _watchdog_interval:
+                _last_watchdog_ping = current_time
+                _sd_notify('WATCHDOG=1')
 
             # Re-read settings from DB periodically (every 30s)
             _reload_settings()

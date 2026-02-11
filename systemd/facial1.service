@@ -2,13 +2,20 @@
 Description=Driver Sleeping Alarm
 After=network-online.target
 Wants=network-online.target
+# If facial1 crashes 5 times in 3 minutes, reboot the Pi
+StartLimitIntervalSec=180
+StartLimitBurst=5
+StartLimitAction=reboot
 
 [Service]
-Type=simple
+Type=notify
 User=pi
 Group=pi
 
 WorkingDirectory=/home/pi/facial-tracker-firmware
+
+# systemd watchdog: if main loop hangs for 30s, kill and restart
+WatchdogSec=30
 
 Environment=PYTHONUNBUFFERED=1
 Environment="PYTHONPATH=/home/pi/facial-tracker-firmware"
@@ -41,6 +48,9 @@ Environment="DB_PATH=/home/pi/facial-tracker-firmware/data/blinksmart.db"
 
 ExecStart=/home/pi/facial-tracker-firmware/venv/bin/python \
           /home/pi/facial-tracker-firmware/facil_event_capture.py
+
+# On any stop (crash, OOM, watchdog kill): force buzzer + LED OFF
+ExecStopPost=/home/pi/facial-tracker-firmware/setup/gpio_cleanup.sh
 
 Restart=always
 RestartSec=5
