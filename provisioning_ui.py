@@ -824,9 +824,20 @@ HTML_TEMPLATE = '''
             .then(r => r.json())
             .then(data => {
                 msgDiv.style.display = 'block';
-                msgDiv.className = 'msg ' + (data.success ? 'success' : 'error');
-                msgDiv.textContent = data.success ? 'Settings saved!' : (data.error || 'Failed');
-                setTimeout(() => { msgDiv.style.display = 'none'; }, 4000);
+                if (data.success) {
+                    msgDiv.className = 'msg success';
+                    msgDiv.textContent = 'Settings saved! Restarting Facial Tracking...';
+                    fetch('/api/services/facial1/restart', { method: 'POST' })
+                        .then(r => r.json())
+                        .then(r => {
+                            msgDiv.textContent = r.success ? 'Settings saved! Facial Tracking restarted.' : 'Settings saved! Restart failed: ' + (r.message || '');
+                            setTimeout(() => { msgDiv.style.display = 'none'; }, 4000);
+                        });
+                } else {
+                    msgDiv.className = 'msg error';
+                    msgDiv.textContent = data.error || 'Failed';
+                    setTimeout(() => { msgDiv.style.display = 'none'; }, 4000);
+                }
             })
             .catch(e => {
                 msgDiv.style.display = 'block';
