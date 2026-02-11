@@ -152,8 +152,10 @@ class EventFrameBuffer:
             is_critical = driver_status in ['Sleeping', 'Yawning',
                                             'Sleeping/Looking Down', 'Yawning/Fatigued']
 
-            # Handle NoFace separately — 1 frame per minute
-            if is_noface:
+            # Handle NoFace: if no event in progress, save 1 frame per minute.
+            # If an event IS in progress, fall through to state machine so
+            # the event can transition and complete (NoFace = non-critical).
+            if is_noface and self.state == EventState.IDLE:
                 self._handle_noface(frame_data, current_time)
                 return
 
