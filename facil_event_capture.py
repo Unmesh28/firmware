@@ -252,10 +252,10 @@ def save_image(frame, folder_path, speed, lat2, long2, driver_status):
         f"Lat,Long:{lat2},{long2}",
         f"Speed:{speed} Km/h"
     ]
-    cv2.rectangle(frame, (0, h - 30), (w, h), (255, 0, 0), -1)
+    cv2.rectangle(frame, (0, h - 20), (w, h), (255, 0, 0), -1)
     x = 5
     for text in footer_text:
-        cv2.putText(frame, text, (x, h - 10), FONT, FONT_SCALE, (255, 255, 255), FONT_THICKNESS, cv2.LINE_AA)
+        cv2.putText(frame, text, (x, h - 6), FONT, FONT_SCALE, (255, 255, 255), FONT_THICKNESS, cv2.LINE_AA)
         (tw, _), _ = cv2.getTextSize(text, FONT, FONT_SCALE, FONT_THICKNESS)
         x += tw + 10
 
