@@ -24,7 +24,7 @@ Nice=15
 CPUWeight=10
 IOSchedulingClass=idle
 IOSchedulingPriority=7
-MemoryMax=25M
+MemoryMax=60M
 
 StandardOutput=journal
 StandardError=journal

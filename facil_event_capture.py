@@ -234,28 +234,15 @@ def capture_and_send_verification_image(frame, lat, long2, speed, acc):
 FONT = cv2.FONT_HERSHEY_SIMPLEX
 FONT_SCALE = 0.4
 FONT_THICKNESS = 1
-_padding_x = 4
-_padding_y = 3
-_top_left = (15, 15)
 
 def save_image(frame, folder_path, speed, lat2, long2, driver_status):
-    """Save annotated image with driver status overlay and footer.
-    Filename includes metadata for upload_images.py parsing."""
+    """Save image with footer overlay. Filename includes metadata for upload_images.py parsing."""
     lat2 = round(float(lat2), 4)
     long2 = round(float(long2), 4)
     timestamp_obj = datetime.now()
     timestamp = timestamp_obj.strftime("%Y-%m-%d %H:%M:%S")
     filename_time = timestamp_obj.strftime("%Y%m%d_%H%M%S%f")
     image_file = os.path.join(folder_path, f"{filename_time}_{driver_status}_{lat2}_{long2}_{speed}.jpg")
-
-    # Draw driver status box at top
-    driver_text = f"Driver Status: {driver_status}"
-    (text_width, text_height), _ = cv2.getTextSize(driver_text, FONT, FONT_SCALE, FONT_THICKNESS)
-    bottom_right = (_top_left[0] + text_width + 2 * _padding_x, _top_left[1] + text_height + 2 * _padding_y)
-    cv2.rectangle(frame, _top_left, bottom_right, (139, 104, 0), -1)
-    cv2.rectangle(frame, _top_left, bottom_right, (0, 0, 0), 1)
-    text_position = (_top_left[0] + _padding_x, _top_left[1] + text_height + _padding_y - 2)
-    cv2.putText(frame, driver_text, text_position, FONT, FONT_SCALE, (255, 255, 255), FONT_THICKNESS, cv2.LINE_AA)
 
     # Draw footer with metadata
     h, w = frame.shape[:2]
@@ -266,9 +253,9 @@ def save_image(frame, folder_path, speed, lat2, long2, driver_status):
         f"Speed:{speed} Km/h"
     ]
     cv2.rectangle(frame, (0, h - 30), (w, h), (255, 0, 0), -1)
-    x = 5
+    x = 15
     for text in footer_text:
-        cv2.putText(frame, text, (x, h - 10), FONT, FONT_SCALE, (255, 255, 255), FONT_THICKNESS, cv2.LINE_AA)
+        cv2.putText(frame, text, (x, h - 15), FONT, FONT_SCALE, (255, 255, 255), FONT_THICKNESS, cv2.LINE_AA)
         (tw, _), _ = cv2.getTextSize(text, FONT, FONT_SCALE, FONT_THICKNESS)
         x += tw + 10
 
@@ -382,10 +369,6 @@ def main():
     last_gps_send_time = 0
     gps_send_interval = 2  # Send GPS every 2 seconds when Active
 
-    # Reuse single threads for LED control instead of spawning new ones each frame
-    _blink_thread = None
-    _blink_thread_lock = threading.Lock()
-
     # Track NoFace detection for buzzer trigger
     no_face_start_time = None
     no_face_buzzer_triggered = False
@@ -443,8 +426,8 @@ def main():
             # Read GPS from shared memory (single read, no network round-trip)
             if current_time - last_gps_read_time >= gps_read_interval:
                 last_gps_read_time = current_time
-                lat_f, lon_f, speed_i, acc_f, _ts = gps_reader.read()
-                cached_speed = str(speed_i)
+                lat_f, lon_f, speed_f, acc_f, _ts = gps_reader.read()
+                cached_speed = str(int(speed_f))
                 cached_lat = str(lat_f) if lat_f != 0.0 else '0.0'
                 cached_long = str(lon_f) if lon_f != 0.0 else '0.0'
                 cached_acc = str(acc_f)
@@ -511,11 +494,9 @@ def main():
                     driver_status = 'Sleeping'
                     start_continuous_buzz()   # Refreshes watchdog each frame
                     if led_blink_enabled:
+                        start_blinking()          # Activate LED (idempotent)
                         refresh_blinking()        # Refreshes LED watchdog each frame
-                        with _blink_thread_lock:
-                            if _blink_thread is None or not _blink_thread.is_alive():
-                                _blink_thread = threading.Thread(target=start_blinking, daemon=True)
-                                _blink_thread.start()
+                        update_led()              # Actually toggle the GPIO pin
                     # Save annotated image (throttled 1/sec, queued to worker)
                     if current_time - last_save_time >= SAVE_IMAGE_INTERVAL:
                         last_save_time = current_time
@@ -525,11 +506,9 @@ def main():
                     driver_status = 'Yawning'
                     start_continuous_buzz()   # Refreshes watchdog each frame
                     if led_blink_enabled:
+                        start_blinking()          # Activate LED (idempotent)
                         refresh_blinking()        # Refreshes LED watchdog each frame
-                        with _blink_thread_lock:
-                            if _blink_thread is None or not _blink_thread.is_alive():
-                                _blink_thread = threading.Thread(target=start_blinking, daemon=True)
-                                _blink_thread.start()
+                        update_led()              # Actually toggle the GPIO pin
                     if current_time - last_save_time >= SAVE_IMAGE_INTERVAL:
                         last_save_time = current_time
                         _enqueue_save_image(frame.copy(), folder_path, speed, lat, long2, driver_status)
@@ -574,8 +553,8 @@ def main():
                     driver_status=driver_status
                 )
 
-            # Send GPS data periodically for Active status (for live tracking)
-            if driver_status == 'Active' and float(lat) != 0.0 and float(long2) != 0.0:
+            # Send GPS data + driver status periodically (for all statuses)
+            if float(lat) != 0.0 and float(long2) != 0.0:
                 if current_time - last_gps_send_time >= gps_send_interval:
                     _enqueue_gps(lat, long2, speed, str(datetime.now()), driver_status, acc)
                     last_gps_send_time = current_time

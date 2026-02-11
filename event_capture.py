@@ -69,24 +69,31 @@ class EventFrameBuffer:
     """
     Manages circular frame buffer and event capture logic.
 
+    Event flow: 2 pre-event frames + during-event frames + 2 post-event frames.
+    All stored as one event folder on disk, then uploaded by upload_images.py.
+
     Key design for Pi Zero 2W performance:
     - add_frame() does ZERO JPEG encoding — just stores raw numpy bytes (~0.1ms)
     - JPEG encoding happens in a single persistent save worker thread
-    - Event cooldown prevents rapid start/stop cycling that causes I/O storms
     - Single save worker serializes SD card writes (no concurrent I/O)
     """
 
     # Configuration - optimized for Pi Zero 2W (512MB RAM)
-    FPS = 2                     # Buffer capture rate
-    PRE_EVENT_SECONDS = 2.0
-    POST_EVENT_SECONDS = 1.0
-    MAX_EVENT_SECONDS = 10.0    # Force complete after 10 seconds
-    BUFFER_SIZE = int(FPS * 2)  # 4 frames at 2 FPS (~3.6MB raw at 640x480)
-    JPEG_QUALITY = 40           # Used in save worker, not main thread
-    EVENT_COOLDOWN = 3.0        # Seconds to wait after event before starting new one
+    PRE_EVENT_FRAMES = 2            # Frames to keep before event starts
+    POST_EVENT_FRAMES = 2           # Frames to capture after event ends
+    MAX_EVENT_SECONDS = 10.0        # Force complete after 10 seconds
+    BUFFER_SIZE = PRE_EVENT_FRAMES + 2  # Circular buffer (slightly larger than needed)
+    JPEG_QUALITY = 40               # Used in save worker, not main thread
+    EVENT_COOLDOWN = 3.0            # Seconds between events
+    POST_EVENT_TIMEOUT = 5.0        # Force complete POST_EVENT if frames stop arriving
 
     # NoFace: save only 1 frame per minute
     NOFACE_INTERVAL_SECONDS = 60
+
+    # Font settings for footer overlay
+    FONT = cv2.FONT_HERSHEY_SIMPLEX
+    FONT_SCALE = 0.4
+    FONT_THICKNESS = 1
 
     def __init__(self, base_events_path: str, upload_callback=None):
         self.base_events_path = base_events_path
@@ -99,8 +106,9 @@ class EventFrameBuffer:
         self.state = EventState.IDLE
         self.current_event: Optional[EventData] = None
 
-        # Timing
+        # Timing / counters
         self.event_end_time: Optional[float] = None
+        self.post_event_count: int = 0
         self.last_critical_status: Optional[str] = None
         self.last_event_complete_time: float = 0  # For cooldown
 
@@ -116,17 +124,12 @@ class EventFrameBuffer:
         self._save_worker.start()
 
         os.makedirs(base_events_path, exist_ok=True)
-        log_info(f"EventFrameBuffer initialized: buffer_size={self.BUFFER_SIZE}, cooldown={self.EVENT_COOLDOWN}s")
+        log_info(f"EventFrameBuffer initialized: pre={self.PRE_EVENT_FRAMES}, post={self.POST_EVENT_FRAMES}, cooldown={self.EVENT_COOLDOWN}s")
 
     def add_frame(self, frame, speed: str, lat: str, long: str, acc: str, driver_status: str):
-        """Add a frame to the buffer. Called from main detection loop.
-
-        CRITICAL: This does NO JPEG encoding. Just stores raw numpy bytes.
-        Cost: ~0.1ms (numpy tobytes) vs ~5-10ms (cv2.imencode).
-        """
+        """Add a frame to the buffer. Called from main detection loop at ~2 FPS."""
         current_time = time.time()
 
-        # Store raw frame bytes — JPEG encoding moves to save worker
         frame_data = FrameData(
             frame_raw=frame.tobytes(),
             frame_shape=frame.shape,
@@ -140,43 +143,49 @@ class EventFrameBuffer:
         )
 
         with self.lock:
-            # Always add to circular buffer
+            # Always add to circular buffer (for pre-event frames)
             self.frame_buffer.append(frame_data)
 
             is_noface = driver_status in ['NoFace', 'No Face']
             is_critical = driver_status in ['Sleeping', 'Yawning',
                                             'Sleeping/Looking Down', 'Yawning/Fatigued']
 
-            # Handle NoFace separately — 1 frame per minute
-            if is_noface:
-                self._handle_noface(frame_data, current_time)
-                return
-
+            # --- IDLE ---
             if self.state == EventState.IDLE:
-                if is_critical:
-                    # Cooldown check: don't start new event too soon after last one
+                if is_noface:
+                    self._handle_noface(frame_data, current_time)
+                elif is_critical:
                     if current_time - self.last_event_complete_time < self.EVENT_COOLDOWN:
                         return
                     self._start_event(driver_status, current_time)
 
+            # --- EVENT_ACTIVE ---
             elif self.state == EventState.EVENT_ACTIVE:
                 if is_critical:
                     self.current_event.frames.append(frame_data)
                     self.last_critical_status = driver_status
                     # Force complete if too long
                     if current_time - self.current_event.start_time >= self.MAX_EVENT_SECONDS:
-                        log_info(f"Event {self.current_event.event_id} exceeded max duration, force completing")
+                        log_info(f"Event {self.current_event.event_id} max duration reached, completing")
                         self._transition_to_post_event(current_time)
                 else:
+                    # Not critical anymore (Active or NoFace) — start post-event capture
                     self._transition_to_post_event(current_time)
 
+            # --- POST_EVENT ---
             elif self.state == EventState.POST_EVENT:
                 self.current_event.frames.append(frame_data)
-                if current_time - self.event_end_time >= self.POST_EVENT_SECONDS:
+                self.post_event_count += 1
+                # Complete after collecting enough post-event frames
+                if self.post_event_count >= self.POST_EVENT_FRAMES:
+                    self._complete_event(current_time)
+                # Safety: force complete if post-event takes too long (frames stopped arriving)
+                elif current_time - self.event_end_time >= self.POST_EVENT_TIMEOUT:
+                    log_info(f"Event {self.current_event.event_id} post-event timeout, completing with {self.post_event_count} post frames")
                     self._complete_event(current_time)
 
     def _start_event(self, driver_status: str, current_time: float):
-        """Start a new event capture"""
+        """Start a new event — grab last N pre-event frames from buffer"""
         event_id = f"evt_{uuid.uuid4().hex[:8]}"
         event_type = self._map_status_to_event_type(driver_status)
 
@@ -187,18 +196,17 @@ class EventFrameBuffer:
             frames=[]
         )
 
-        # Copy pre-event frames from buffer
-        pre_event_cutoff = current_time - self.PRE_EVENT_SECONDS
-        for frame_data in self.frame_buffer:
-            if frame_data.timestamp >= pre_event_cutoff:
-                self.current_event.frames.append(frame_data)
+        # Copy last PRE_EVENT_FRAMES from circular buffer as pre-event context
+        buffer_list = list(self.frame_buffer)
+        pre_frames = buffer_list[-self.PRE_EVENT_FRAMES:] if len(buffer_list) >= self.PRE_EVENT_FRAMES else buffer_list
+        self.current_event.frames.extend(pre_frames)
 
         self.state = EventState.EVENT_ACTIVE
         self.last_critical_status = driver_status
-        log_info(f"Event started: {event_id}, type={event_type}, pre_frames={len(self.current_event.frames)}")
+        log_info(f"Event started: {event_id}, type={event_type}, pre_frames={len(pre_frames)}")
 
     def _handle_noface(self, frame_data: FrameData, current_time: float):
-        """Handle NoFace — save only 1 frame per minute"""
+        """Handle NoFace when IDLE — save 1 frame per minute"""
         if current_time - self.last_noface_save_time < self.NOFACE_INTERVAL_SECONDS:
             return
 
@@ -215,19 +223,18 @@ class EventFrameBuffer:
         folder_name = noface_event.get_folder_name()
         noface_event.folder_path = os.path.join(self.base_events_path, folder_name)
         log_info(f"NoFace captured: {event_id} (1 frame, next in {self.NOFACE_INTERVAL_SECONDS}s)")
-
-        # Queue for save worker (non-blocking)
         self._enqueue_save(noface_event)
 
     def _transition_to_post_event(self, current_time: float):
-        """Transition from active event to post-event capture"""
+        """Driver no longer critical — start collecting post-event frames"""
         self.event_end_time = current_time
         self.current_event.end_time = current_time
+        self.post_event_count = 0
         self.state = EventState.POST_EVENT
-        log_info(f"Event {self.current_event.event_id} ended, capturing post-event frames for {self.POST_EVENT_SECONDS}s")
+        log_info(f"Event {self.current_event.event_id} ended, capturing {self.POST_EVENT_FRAMES} post-event frames")
 
     def _complete_event(self, current_time: float):
-        """Complete the event and queue for saving"""
+        """Event done — queue for save worker"""
         if not self.current_event:
             return
 
@@ -235,15 +242,15 @@ class EventFrameBuffer:
         folder_name = event.get_folder_name()
         event.folder_path = os.path.join(self.base_events_path, folder_name)
 
-        log_info(f"Event {event.event_id} complete: {len(event.frames)} frames, saving to {event.folder_path}")
+        log_info(f"Event {event.event_id} complete: {len(event.frames)} frames (pre={self.PRE_EVENT_FRAMES}+during+post={self.post_event_count}), saving to {event.folder_path}")
 
-        # Queue for save worker
         self._enqueue_save(event)
 
-        # Reset state with cooldown
+        # Reset state
         self.state = EventState.IDLE
         self.current_event = None
         self.event_end_time = None
+        self.post_event_count = 0
         self.last_critical_status = None
         self.last_event_complete_time = current_time
 
@@ -281,8 +288,26 @@ class EventFrameBuffer:
                 filename = f"frame_{i:04d}.jpg"
                 filepath = os.path.join(event.folder_path, filename)
 
-                # Reconstruct numpy array from raw bytes, then JPEG encode
-                frame = np.frombuffer(frame_data.frame_raw, dtype=np.uint8).reshape(frame_data.frame_shape)
+                # Reconstruct numpy array from raw bytes (copy needed for cv2 drawing)
+                frame = np.frombuffer(frame_data.frame_raw, dtype=np.uint8).reshape(frame_data.frame_shape).copy()
+
+                # Draw footer overlay
+                h, w = frame.shape[:2]
+                lat_r = round(float(frame_data.lat), 4) if frame_data.lat else 0.0
+                lon_r = round(float(frame_data.long), 4) if frame_data.long else 0.0
+                footer_text = [
+                    "Sapience Automata 2025",
+                    f"Time:{frame_data.datetime_str}",
+                    f"Lat,Long:{lat_r},{lon_r}",
+                    f"Speed:{frame_data.speed} Km/h"
+                ]
+                cv2.rectangle(frame, (0, h - 30), (w, h), (255, 0, 0), -1)
+                x = 15
+                for text in footer_text:
+                    cv2.putText(frame, text, (x, h - 15), self.FONT, self.FONT_SCALE, (255, 255, 255), self.FONT_THICKNESS, cv2.LINE_AA)
+                    (tw, _), _ = cv2.getTextSize(text, self.FONT, self.FONT_SCALE, self.FONT_THICKNESS)
+                    x += tw + 10
+
                 _, encoded = cv2.imencode('.jpg', frame, encode_param)
                 with open(filepath, 'wb') as f:
                     f.write(encoded.tobytes())
