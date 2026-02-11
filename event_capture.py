@@ -286,8 +286,8 @@ class EventFrameBuffer:
                 filename = f"frame_{i:04d}.jpg"
                 filepath = os.path.join(event.folder_path, filename)
 
-                # Reconstruct numpy array from raw bytes, then JPEG encode
-                frame = np.frombuffer(frame_data.frame_raw, dtype=np.uint8).reshape(frame_data.frame_shape)
+                # Reconstruct numpy array from raw bytes (copy needed for cv2 drawing)
+                frame = np.frombuffer(frame_data.frame_raw, dtype=np.uint8).reshape(frame_data.frame_shape).copy()
 
                 # Draw footer overlay
                 h, w = frame.shape[:2]
