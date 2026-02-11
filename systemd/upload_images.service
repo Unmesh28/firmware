@@ -9,11 +9,12 @@ User=pi
 Group=pi
 
 # OTA-safe paths
-Environment=PYTHONPATH=/home/pi/facial-tracker-firmware/current/apps:/home/pi/facial-tracker-firmware/current/libs
-WorkingDirectory=/home/pi/facial-tracker-firmware/current/apps
+Environment="DB_PATH=/home/pi/facial-tracker-firmware/data/blinksmart.db"
+Environment=PYTHONPATH=/home/pi/facial-tracker-firmware
+WorkingDirectory=/home/pi/facial-tracker-firmware
 
 ExecStart=/home/pi/facial-tracker-firmware/venv/bin/python \
-          /home/pi/facial-tracker-firmware/current/apps/upload_images.py
+          /home/pi/facial-tracker-firmware/upload_images.py
 
 Restart=on-failure
 RestartSec=5
@@ -23,7 +24,7 @@ Nice=15
 CPUWeight=10
 IOSchedulingClass=idle
 IOSchedulingPriority=7
-MemoryMax=40M
+MemoryMax=25M
 
 StandardOutput=journal
 StandardError=journal

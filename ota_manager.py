@@ -147,28 +147,13 @@ class OTAManager:
             json.dump(self.config, f, indent=2)
     
     def get_device_credentials(self) -> Tuple[Optional[str], Optional[str]]:
-        """Get device ID and auth token from database"""
+        """Get device ID and auth token from SQLite database"""
         try:
-            import mysql.connector
-            conn = mysql.connector.connect(
-                host='127.0.0.1',
-                database='car',
-                user='root',
-                password='raspberry@123'
-            )
-            cursor = conn.cursor()
-            
-            # Get device_id
-            cursor.execute("SELECT device_id, auth_key FROM device LIMIT 1")
-            row = cursor.fetchone()
-            
-            cursor.close()
-            conn.close()
-            
+            import db_helper
+            row = db_helper.fetchone("SELECT device_id, auth_key FROM device LIMIT 1")
             if row:
-                return row[0], row[1]
+                return row['device_id'], row['auth_key']
             return None, None
-            
         except Exception as e:
             logger.error(f"Failed to get credentials: {e}")
             return None, None

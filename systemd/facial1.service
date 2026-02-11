@@ -1,18 +1,24 @@
 [Unit]
 Description=Driver Sleeping Alarm
-After=network-online.target ota-startup.service
+After=network-online.target
 Wants=network-online.target
-Requires=ota-startup.service
+# If facial1 crashes 5 times in 3 minutes, reboot the Pi
+StartLimitIntervalSec=180
+StartLimitBurst=5
+StartLimitAction=reboot
 
 [Service]
-Type=simple
+Type=notify
 User=pi
 Group=pi
 
-WorkingDirectory=/home/pi/facial-tracker-firmware/current/apps
+WorkingDirectory=/home/pi/facial-tracker-firmware
+
+# systemd watchdog: if main loop hangs for 30s, kill and restart
+WatchdogSec=30
 
 Environment=PYTHONUNBUFFERED=1
-Environment="PYTHONPATH=/home/pi/facial-tracker-firmware/current/apps:/home/pi/facial-tracker-firmware/current/libs"
+Environment="PYTHONPATH=/home/pi/facial-tracker-firmware"
 
 # Performance settings for Pi Zero 2W
 Environment=HEADLESS=1
@@ -37,14 +43,21 @@ Environment="OMP_NUM_THREADS=2"
 Environment="TF_NUM_INTRAOP_THREADS=2"
 Environment="TF_NUM_INTEROP_THREADS=1"
 
+# SQLite database path
+Environment="DB_PATH=/home/pi/facial-tracker-firmware/data/blinksmart.db"
+
 ExecStart=/home/pi/facial-tracker-firmware/venv/bin/python \
-          /home/pi/facial-tracker-firmware/current/apps/facil_event_capture.py
+          /home/pi/facial-tracker-firmware/facil_event_capture.py
+
+# On any stop (crash, OOM, watchdog kill): force buzzer + LED OFF
+ExecStopPost=/home/pi/facial-tracker-firmware/setup/gpio_cleanup.sh
 
 Restart=always
 RestartSec=5
 
 # Set process scheduling priority (lower nice = higher priority)
-Nice=-5
+# HIGHEST priority — this is the safety-critical service
+Nice=-10
 
 # Highest I/O priority — swap page-ins happen faster than other services
 IOSchedulingClass=realtime
@@ -53,8 +66,10 @@ IOSchedulingPriority=0
 # Give facial detection maximum CPU share when competing with other services
 CPUWeight=10000
 
-# Limit memory to prevent OOM killing other services
-MemoryMax=350M
+# Memory: with MySQL/Redis gone, we have more headroom
+# Total RAM ~440MB, OS ~45MB, GPS ~15MB -> ~380MB available
+MemoryMax=320M
+MemoryHigh=280M
 
 StandardOutput=journal
 StandardError=journal

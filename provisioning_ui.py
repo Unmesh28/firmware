@@ -61,7 +61,6 @@ SERVICES = [
     {'name': 'send-data-api', 'display': 'Data Sync', 'description': 'Telemetry to cloud API'},
     {'name': 'upload_images', 'display': 'Image Upload', 'description': 'Upload images to cloud'},
     {'name': 'ota-auto-update', 'display': 'OTA Updates', 'description': 'Auto-update daemon'},
-    {'name': 'provisioning_ui', 'display': 'Web UI', 'description': 'This management page'},
     {'name': 'pi-control', 'display': 'Pi Control', 'description': 'Remote device control'},
 ]
 
@@ -190,8 +189,9 @@ HTML_TEMPLATE = '''
             text-align: center;
         }
         .camera-container img {
-            max-width: 100%;
+            width: 100%;
             height: auto;
+            display: block;
         }
         .wifi-network {
             display: flex;
@@ -227,6 +227,7 @@ HTML_TEMPLATE = '''
             <button class="tab" onclick="showTab('services')">Services</button>
             <button class="tab" onclick="showTab('camera')">Camera</button>
             <button class="tab" onclick="showTab('wifi')">WiFi</button>
+            <button class="tab" onclick="showTab('settings')">Settings</button>
         </div>
         
         <!-- Provisioning Panel -->
@@ -249,28 +250,6 @@ HTML_TEMPLATE = '''
             <button class="btn btn-secondary" onclick="checkStatus()">
                 Refresh Status
             </button>
-            
-            <!-- Activation Speed Card -->
-            <div class="card" style="margin-top:12px;">
-                <h2>⚡ Activation Speed</h2>
-                <p style="font-size:0.75em; color:#888; margin-bottom:10px;">Facial tracking only activates when vehicle speed exceeds this threshold (km/h).</p>
-                <div style="display:flex; gap:10px; align-items:center;">
-                    <input type="number" id="activationSpeed" min="0" max="200" style="flex:1;" placeholder="Speed (km/h)">
-                    <button class="btn btn-primary btn-sm" onclick="saveActivationSpeed()">Save</button>
-                </div>
-                <div id="speedMessage" class="msg" style="display:none;"></div>
-            </div>
-            
-            <!-- Delete Device ID Card -->
-            <div class="card" style="margin-top:12px; border: 1px solid #c92a2a;" id="deleteDeviceCard">
-                <h2>⚠️ Delete Device ID</h2>
-                <p style="font-size:0.75em; color:#888; margin-bottom:10px;">This will remove the device credentials and allow re-provisioning. Requires password.</p>
-                <input type="password" id="deletePassword" placeholder="Enter password to confirm">
-                <button class="btn btn-danger" onclick="deleteDeviceId()">
-                    🗑️ Delete Device ID
-                </button>
-                <div id="deleteMessage" class="msg" style="display:none;"></div>
-            </div>
         </div>
         
         <!-- Services Panel -->
@@ -385,6 +364,79 @@ HTML_TEMPLATE = '''
             </div>
         </div>
         
+        <!-- Settings Panel -->
+        <div id="settings" class="panel">
+            <!-- Detection Settings -->
+            <div class="card">
+                <h2>Detection Settings</h2>
+                <div style="display:flex; gap:10px; align-items:center; padding:10px 0; border-bottom:1px solid #2d3748;">
+                    <label style="font-size:0.85em; width:160px;">Activation Speed (km/h)</label>
+                    <input type="number" id="activationSpeed" min="0" max="200" style="flex:1;" placeholder="0">
+                </div>
+
+                <!-- LED Blink Toggle -->
+                <div style="display:flex; align-items:center; justify-content:space-between; padding:10px 0; border-bottom:1px solid #2d3748;">
+                    <div>
+                        <div style="font-weight:600; font-size:0.9em;">LED Blink on Alert</div>
+                        <div style="font-size:0.75em; color:#888;">Blink LED (GPIO 4) during sleep/yawn detection</div>
+                    </div>
+                    <label style="position:relative; display:inline-block; width:50px; height:26px; cursor:pointer;">
+                        <input type="checkbox" id="ledBlinkToggle" style="opacity:0; width:0; height:0;">
+                        <span id="ledSlider" style="position:absolute; top:0; left:0; right:0; bottom:0; background:#c92a2a; border-radius:26px; transition:0.3s;"></span>
+                        <span id="ledKnob" style="position:absolute; top:3px; left:3px; width:20px; height:20px; background:white; border-radius:50%; transition:0.3s;"></span>
+                    </label>
+                </div>
+
+                <!-- NoFace Alert Toggle -->
+                <div style="display:flex; align-items:center; justify-content:space-between; padding:10px 0; border-bottom:1px solid #2d3748;">
+                    <div>
+                        <div style="font-weight:600; font-size:0.9em;">NoFace Alert</div>
+                        <div style="font-size:0.75em; color:#888;">Beep when no face detected for set duration</div>
+                    </div>
+                    <label style="position:relative; display:inline-block; width:50px; height:26px; cursor:pointer;">
+                        <input type="checkbox" id="nofaceToggle" onchange="toggleNofaceUI()" style="opacity:0; width:0; height:0;">
+                        <span id="nofaceSlider" style="position:absolute; top:0; left:0; right:0; bottom:0; background:#c92a2a; border-radius:26px; transition:0.3s;"></span>
+                        <span id="nofaceKnob" style="position:absolute; top:3px; left:3px; width:20px; height:20px; background:white; border-radius:50%; transition:0.3s;"></span>
+                    </label>
+                </div>
+                <div id="nofaceSettings" style="display:none; padding:10px 0;">
+                    <div style="display:flex; gap:10px; align-items:center;">
+                        <label style="font-size:0.85em; width:160px;">Alert after (seconds)</label>
+                        <input type="number" id="nofaceThreshold" min="1" max="30" step="1" style="flex:1;" placeholder="2">
+                    </div>
+                </div>
+
+                <button class="btn btn-primary" style="margin-top:10px;" onclick="saveSettings()">Save Detection Settings</button>
+                <div id="settingsMessage" class="msg" style="display:none;"></div>
+            </div>
+
+            <!-- Data Retention Settings -->
+            <div class="card" style="margin-top:12px; border: 1px solid #fab005;">
+                <h2>Data Retention</h2>
+                <p style="font-size:0.75em; color:#888; margin-bottom:10px;">Auto-delete old GPS data and images. Requires password.</p>
+                <div style="display:flex; gap:10px; align-items:center; margin-bottom:8px;">
+                    <label style="font-size:0.85em; width:110px;">GPS Data (days)</label>
+                    <input type="number" id="gpsRetention" min="1" max="365" style="flex:1;" placeholder="30">
+                </div>
+                <div style="display:flex; gap:10px; align-items:center; margin-bottom:8px;">
+                    <label style="font-size:0.85em; width:110px;">Images (days)</label>
+                    <input type="number" id="imageRetention" min="1" max="365" style="flex:1;" placeholder="15">
+                </div>
+                <input type="password" id="retentionPassword" placeholder="Password to save" style="margin-bottom:8px;">
+                <button class="btn btn-primary btn-sm" onclick="saveRetention()">Save Retention Settings</button>
+                <div id="retentionMessage" class="msg" style="display:none;"></div>
+            </div>
+
+            <!-- Delete Device ID Card -->
+            <div class="card" style="margin-top:12px; border: 1px solid #c92a2a;">
+                <h2>Delete Device</h2>
+                <p style="font-size:0.75em; color:#888; margin-bottom:10px;">Remove device credentials, GPS data, car data, and images. Requires password.</p>
+                <input type="password" id="deletePassword" placeholder="Enter password to confirm">
+                <button class="btn btn-danger" onclick="deleteDeviceId()">Delete Device</button>
+                <div id="deleteMessage" class="msg" style="display:none;"></div>
+            </div>
+        </div>
+
         <div id="message"></div>
         <div class="info">IP: {{ ip_address }}</div>
     </div>
@@ -400,6 +452,7 @@ HTML_TEMPLATE = '''
             
             if (name === 'services') loadServices();
             if (name === 'wifi') checkWifi();
+            if (name === 'settings') { loadSettings(); loadRetention(); }
         }
         
         function showMessage(text, type) {
@@ -717,38 +770,131 @@ HTML_TEMPLATE = '''
             });
         }
         
-        // === Activation Speed ===
-        function loadActivationSpeed() {
-            fetch('/api/config/speed')
+        // === Settings ===
+        function updateToggleUI(checkbox, sliderId, knobId) {
+            const slider = document.getElementById(sliderId);
+            const knob = document.getElementById(knobId);
+            if (checkbox.checked) {
+                slider.style.background = '#2f9e44';
+                knob.style.left = '27px';
+            } else {
+                slider.style.background = '#c92a2a';
+                knob.style.left = '3px';
+            }
+        }
+
+        function toggleNofaceUI() {
+            const toggle = document.getElementById('nofaceToggle');
+            updateToggleUI(toggle, 'nofaceSlider', 'nofaceKnob');
+            document.getElementById('nofaceSettings').style.display = toggle.checked ? 'block' : 'none';
+        }
+
+        function loadSettings() {
+            fetch('/api/config/settings')
                 .then(r => r.json())
                 .then(data => {
-                    document.getElementById('activationSpeed').value = data.value || 20;
+                    document.getElementById('activationSpeed').value = data.speed || 0;
+                    const ledToggle = document.getElementById('ledBlinkToggle');
+                    ledToggle.checked = data.led_blink_enabled;
+                    updateToggleUI(ledToggle, 'ledSlider', 'ledKnob');
+                    const nofaceToggle = document.getElementById('nofaceToggle');
+                    nofaceToggle.checked = data.noface_enabled;
+                    updateToggleUI(nofaceToggle, 'nofaceSlider', 'nofaceKnob');
+                    document.getElementById('nofaceThreshold').value = data.noface_threshold || 2;
+                    document.getElementById('nofaceSettings').style.display = data.noface_enabled ? 'block' : 'none';
                 });
         }
-        
-        function saveActivationSpeed() {
+
+        function saveSettings() {
             const speed = document.getElementById('activationSpeed').value;
-            const msgDiv = document.getElementById('speedMessage');
-            
-            if (!speed || speed < 0 || speed > 200) {
-                msgDiv.style.display = 'block';
-                msgDiv.className = 'msg error';
-                msgDiv.textContent = 'Enter a valid speed (0-200 km/h)';
-                setTimeout(() => { msgDiv.style.display = 'none'; }, 3000);
-                return;
-            }
-            
-            fetch('/api/config/speed', {
+            const ledEnabled = document.getElementById('ledBlinkToggle').checked;
+            const nofaceEnabled = document.getElementById('nofaceToggle').checked;
+            const nofaceThreshold = document.getElementById('nofaceThreshold').value;
+            const msgDiv = document.getElementById('settingsMessage');
+
+            fetch('/api/config/settings', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ value: parseInt(speed) })
+                body: JSON.stringify({
+                    speed: parseInt(speed) || 0,
+                    led_blink_enabled: ledEnabled,
+                    noface_enabled: nofaceEnabled,
+                    noface_threshold: parseInt(nofaceThreshold) || 2
+                })
             })
             .then(r => r.json())
             .then(data => {
                 msgDiv.style.display = 'block';
                 if (data.success) {
                     msgDiv.className = 'msg success';
-                    msgDiv.textContent = 'Activation speed saved! Restart facial1 service to apply.';
+                    msgDiv.textContent = 'Settings saved! Restarting Facial Tracking...';
+                    fetch('/api/services/facial1/restart', { method: 'POST' })
+                        .then(r => r.json())
+                        .then(r => {
+                            msgDiv.textContent = r.success ? 'Settings saved! Facial Tracking restarted.' : 'Settings saved! Restart failed: ' + (r.message || '');
+                            setTimeout(() => { msgDiv.style.display = 'none'; }, 4000);
+                        });
+                } else {
+                    msgDiv.className = 'msg error';
+                    msgDiv.textContent = data.error || 'Failed';
+                    setTimeout(() => { msgDiv.style.display = 'none'; }, 4000);
+                }
+            })
+            .catch(e => {
+                msgDiv.style.display = 'block';
+                msgDiv.className = 'msg error';
+                msgDiv.textContent = 'Error: ' + e;
+                setTimeout(() => { msgDiv.style.display = 'none'; }, 4000);
+            });
+        }
+
+        // === Data Retention ===
+        function loadRetention() {
+            fetch('/api/config/retention')
+                .then(r => r.json())
+                .then(data => {
+                    document.getElementById('gpsRetention').value = data.gps_retention_days || 30;
+                    document.getElementById('imageRetention').value = data.image_retention_days || 15;
+                });
+        }
+
+        function saveRetention() {
+            const gpsDays = document.getElementById('gpsRetention').value;
+            const imageDays = document.getElementById('imageRetention').value;
+            const password = document.getElementById('retentionPassword').value;
+            const msgDiv = document.getElementById('retentionMessage');
+
+            if (!password) {
+                msgDiv.style.display = 'block';
+                msgDiv.className = 'msg error';
+                msgDiv.textContent = 'Password is required';
+                setTimeout(() => { msgDiv.style.display = 'none'; }, 3000);
+                return;
+            }
+            if (!gpsDays || gpsDays < 1 || gpsDays > 365 || !imageDays || imageDays < 1 || imageDays > 365) {
+                msgDiv.style.display = 'block';
+                msgDiv.className = 'msg error';
+                msgDiv.textContent = 'Days must be between 1 and 365';
+                setTimeout(() => { msgDiv.style.display = 'none'; }, 3000);
+                return;
+            }
+
+            fetch('/api/config/retention', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    gps_retention_days: parseInt(gpsDays),
+                    image_retention_days: parseInt(imageDays),
+                    password: password
+                })
+            })
+            .then(r => r.json())
+            .then(data => {
+                msgDiv.style.display = 'block';
+                if (data.success) {
+                    msgDiv.className = 'msg success';
+                    msgDiv.textContent = 'Retention settings saved!';
+                    document.getElementById('retentionPassword').value = '';
                 } else {
                     msgDiv.className = 'msg error';
                     msgDiv.textContent = data.error || 'Failed to save';
@@ -762,7 +908,7 @@ HTML_TEMPLATE = '''
                 setTimeout(() => { msgDiv.style.display = 'none'; }, 4000);
             });
         }
-        
+
         // === Monitoring Toggle ===
         function checkMonitoring() {
             fetch('/api/monitoring/status')
@@ -819,7 +965,6 @@ HTML_TEMPLATE = '''
 
         // Init
         checkStatus();
-        loadActivationSpeed();
         checkMonitoring();
     </script>
 </body>
@@ -1048,8 +1193,8 @@ def generate_camera_frames():
         with camera_lock:
             if camera is None:
                 camera = cv2.VideoCapture(0)
-                camera.set(cv2.CAP_PROP_FRAME_WIDTH, 320)
-                camera.set(cv2.CAP_PROP_FRAME_HEIGHT, 240)
+                camera.set(cv2.CAP_PROP_FRAME_WIDTH, 640)
+                camera.set(cv2.CAP_PROP_FRAME_HEIGHT, 480)
                 camera.set(cv2.CAP_PROP_FPS, 10)
         
         while True:
@@ -1095,6 +1240,51 @@ def index():
         HTML_TEMPLATE,
         ip_address=get_ip_address()
     )
+
+
+# --- Data Retention APIs ---
+
+@app.route('/api/config/retention', methods=['GET'])
+def api_get_retention():
+    """Get data retention settings"""
+    gps_days = get_configure('gps_retention_days')
+    image_days = get_configure('image_retention_days')
+    return jsonify({
+        'gps_retention_days': int(gps_days) if gps_days else 30,
+        'image_retention_days': int(image_days) if image_days else 15,
+    })
+
+
+@app.route('/api/config/retention', methods=['POST'])
+def api_set_retention():
+    """Set data retention settings (requires password)"""
+    try:
+        data = request.get_json()
+        password = data.get('password', '')
+        gps_days = data.get('gps_retention_days')
+        image_days = data.get('image_retention_days')
+
+        delete_password = get_delete_password()
+        if not password or password != delete_password:
+            return jsonify({'success': False, 'error': 'Invalid password'})
+
+        if gps_days is not None:
+            gps_days = int(gps_days)
+            if gps_days < 1 or gps_days > 365:
+                return jsonify({'success': False, 'error': 'GPS days must be 1-365'})
+            set_configure('gps_retention_days', gps_days)
+
+        if image_days is not None:
+            image_days = int(image_days)
+            if image_days < 1 or image_days > 365:
+                return jsonify({'success': False, 'error': 'Image days must be 1-365'})
+            set_configure('image_retention_days', image_days)
+
+        return jsonify({'success': True})
+    except ValueError:
+        return jsonify({'success': False, 'error': 'Invalid value'})
+    except Exception as e:
+        return jsonify({'success': False, 'error': str(e)})
 
 
 # --- Provisioning APIs ---
@@ -1159,14 +1349,14 @@ def api_set_speed():
     try:
         data = request.get_json()
         value = data.get('value')
-        
+
         if value is None:
             return jsonify({'success': False, 'error': 'Value is required'})
-        
+
         value = int(value)
         if value < 0 or value > 200:
             return jsonify({'success': False, 'error': 'Speed must be between 0 and 200 km/h'})
-        
+
         success = set_configure('speed', value)
         if success:
             return jsonify({'success': True, 'value': value})
@@ -1174,6 +1364,58 @@ def api_set_speed():
             return jsonify({'success': False, 'error': 'Failed to save configuration'})
     except ValueError:
         return jsonify({'success': False, 'error': 'Invalid speed value'})
+    except Exception as e:
+        return jsonify({'success': False, 'error': str(e)})
+
+
+# --- Settings APIs (unified) ---
+
+@app.route('/api/config/settings', methods=['GET'])
+def api_get_settings():
+    """Get all detection settings"""
+    speed = get_configure('speed')
+    led = get_configure('led_blink_enabled')
+    nf = get_configure('noface_enabled')
+    nf_thresh = get_configure('noface_threshold')
+    return jsonify({
+        'speed': int(speed) if speed else 0,
+        'led_blink_enabled': led != '0' if led is not None else True,
+        'noface_enabled': nf == '1' if nf is not None else False,
+        'noface_threshold': int(nf_thresh) if nf_thresh else 2,
+    })
+
+
+@app.route('/api/config/settings', methods=['POST'])
+def api_set_settings():
+    """Save all detection settings"""
+    try:
+        data = request.get_json()
+
+        speed = data.get('speed')
+        if speed is not None:
+            speed = int(speed)
+            if speed < 0 or speed > 200:
+                return jsonify({'success': False, 'error': 'Speed must be 0-200'})
+            set_configure('speed', speed)
+
+        led = data.get('led_blink_enabled')
+        if led is not None:
+            set_configure('led_blink_enabled', '1' if led else '0')
+
+        nf = data.get('noface_enabled')
+        if nf is not None:
+            set_configure('noface_enabled', '1' if nf else '0')
+
+        nf_thresh = data.get('noface_threshold')
+        if nf_thresh is not None:
+            nf_thresh = int(nf_thresh)
+            if nf_thresh < 1 or nf_thresh > 30:
+                return jsonify({'success': False, 'error': 'Threshold must be 1-30 seconds'})
+            set_configure('noface_threshold', nf_thresh)
+
+        return jsonify({'success': True})
+    except ValueError:
+        return jsonify({'success': False, 'error': 'Invalid value'})
     except Exception as e:
         return jsonify({'success': False, 'error': str(e)})
 
@@ -1199,7 +1441,7 @@ def get_delete_password():
                 print(f"[DEBUG] get_delete_password: Error reading {env_file}: {e}")
     
     # Fallback to environment variable
-    env_val = os.getenv("DELETE_DEVICE_PASSWORD", "admin123")
+    env_val = os.getenv("DELETE_DEVICE_PASSWORD", "Sapience@2128")
     print(f"[DEBUG] get_delete_password: Using os.getenv: {env_val}")
     return env_val
 
@@ -1483,6 +1725,93 @@ def api_wifi_reset():
 
 
 # ============================================
+# Data Retention Cleanup
+# ============================================
+
+def _run_retention_cleanup():
+    """Delete old GPS data and images based on retention settings.
+    GPS retention uses 'active days' — only days with data count.
+    Image retention uses calendar days from folder name (YYYYMMDD format).
+    """
+    import shutil
+    import db_helper
+    from datetime import datetime, timedelta
+
+    try:
+        # Get retention settings
+        gps_days_str = get_configure('gps_retention_days')
+        image_days_str = get_configure('image_retention_days')
+        gps_days = int(gps_days_str) if gps_days_str else 30
+        image_days = int(image_days_str) if image_days_str else 15
+
+        # --- GPS data cleanup (active days) ---
+        # Get list of distinct active days, ordered newest first
+        rows = db_helper.fetchall(
+            "SELECT DISTINCT date(timestamp) as day FROM gps_data ORDER BY day DESC")
+        if rows:
+            active_days = [r['day'] for r in rows if r['day']]
+            if len(active_days) > gps_days:
+                # Keep only the most recent N active days
+                cutoff_day = active_days[gps_days - 1]  # last day to keep
+                deleted = db_helper.execute_commit(
+                    "DELETE FROM gps_data WHERE date(timestamp) < ?", (cutoff_day,))
+                print(f"[Retention] GPS: kept {gps_days} active days, cutoff={cutoff_day}")
+
+                # Also clean car_data with same cutoff
+                db_helper.execute_commit(
+                    "DELETE FROM car_data WHERE date(timestamp) < ?", (cutoff_day,))
+
+        # --- Image cleanup (calendar days from folder names) ---
+        images_base = os.path.join(os.path.dirname(os.path.abspath(__file__)), "images")
+        if os.path.exists(images_base):
+            cutoff_date = datetime.now() - timedelta(days=image_days)
+            for item in os.listdir(images_base):
+                item_path = os.path.join(images_base, item)
+                if not os.path.isdir(item_path):
+                    continue
+                # Skip 'events' and 'pending' folders — check date-named folders
+                if item in ('events', 'pending'):
+                    # For events folder, clean subfolders by date prefix (YYYYMMDD_*)
+                    if item == 'events':
+                        for event_dir in os.listdir(item_path):
+                            try:
+                                date_str = event_dir[:8]  # YYYYMMDD
+                                folder_date = datetime.strptime(date_str, '%Y%m%d')
+                                if folder_date < cutoff_date:
+                                    shutil.rmtree(os.path.join(item_path, event_dir))
+                                    print(f"[Retention] Deleted event folder: {event_dir}")
+                            except (ValueError, OSError):
+                                continue
+                    continue
+                # Date-named daily folders (e.g., 2026-02-10 or 20260210)
+                try:
+                    # Try YYYY-MM-DD format first, then YYYYMMDD
+                    try:
+                        folder_date = datetime.strptime(item, '%Y-%m-%d')
+                    except ValueError:
+                        folder_date = datetime.strptime(item, '%Y%m%d')
+                    if folder_date < cutoff_date:
+                        shutil.rmtree(item_path)
+                        print(f"[Retention] Deleted image folder: {item}")
+                except (ValueError, OSError):
+                    continue
+
+    except Exception as e:
+        print(f"[Retention] Cleanup error: {e}")
+
+
+def _retention_cleanup_loop():
+    """Run cleanup every hour."""
+    time.sleep(60)  # Wait 1 min after startup
+    while True:
+        try:
+            _run_retention_cleanup()
+        except Exception as e:
+            print(f"[Retention] Loop error: {e}")
+        time.sleep(3600)  # Every hour
+
+
+# ============================================
 # Main
 # ============================================
 
@@ -1493,7 +1822,11 @@ if __name__ == '__main__':
     ip = get_ip_address()
     print(f"Open in browser: http://{ip}:5000")
     print("=" * 50)
-    
+
+    # Start data retention cleanup thread
+    cleanup_thread = threading.Thread(target=_retention_cleanup_loop, daemon=True)
+    cleanup_thread.start()
+
     # Run with minimal resources
     app.run(
         host='0.0.0.0',

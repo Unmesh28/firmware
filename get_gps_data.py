@@ -6,7 +6,6 @@ import math
 import threading
 import queue
 import logging
-import redis
 from geopy.distance import geodesic
 from gps3 import gps3
 import time
@@ -49,7 +48,8 @@ last_gps_write = 0.0
 _last_mqtt_publish = 0.0
 MQTT_PUBLISH_INTERVAL = float(os.getenv('MQTT_PUBLISH_INTERVAL', '2.0'))
 
-redis_client = redis.Redis(host='127.0.0.1', port=6379)
+from gps_shm import GPSWriter
+gps_writer = GPSWriter()
 
 SERIAL_DEVICE_PATH = os.getenv('GPS_SERIAL_DEVICE', '/dev/ttyACM0')
 SERIAL_BAUDRATE = int(os.getenv('GPS_SERIAL_BAUDRATE', '9600'))
@@ -92,26 +92,31 @@ def _debug_log_sample(source, raw_line=None, lat=None, lon=None, speed=None, acc
         )
 
 
-def _redis_get_float(key):
+def _shm_get_float(key):
+    """Read a GPS value from shared memory (for debug comparison)."""
     try:
-        v = redis_client.get(key)
-        if v is None:
-            return None
-        if isinstance(v, (bytes, bytearray)):
-            v = v.decode('utf-8', errors='ignore')
-        return float(v)
+        lat, lon, speed, acc, ts = gps_writer._shm.seek(0) or (None,)
+        # Re-read properly
+        from gps_shm import GPSReader
+        reader = GPSReader()
+        lat, lon, speed, acc, ts = reader.read()
+        reader.close()
+        key_map = {'lat': lat, 'long': lon, 'acc': acc}
+        return key_map.get(key)
     except Exception:
         return None
 
 
-def _redis_get_int(key):
+def _shm_get_int(key):
+    """Read speed from shared memory (for debug comparison)."""
     try:
-        v = redis_client.get(key)
-        if v is None:
-            return None
-        if isinstance(v, (bytes, bytearray)):
-            v = v.decode('utf-8', errors='ignore')
-        return int(float(v))
+        from gps_shm import GPSReader
+        reader = GPSReader()
+        lat, lon, speed, acc, ts = reader.read()
+        reader.close()
+        if key == 'speed':
+            return speed
+        return None
     except Exception:
         return None
 
@@ -124,25 +129,25 @@ def _debug_compare_after_write(lat, lon, speed, acc, source, raw_line=None):
 
     _debug_log_sample(source=source, raw_line=raw_line, lat=lat, lon=lon, speed=speed, acc=acc)
 
-    r_lat = _redis_get_float('lat')
-    r_lon = _redis_get_float('long')
-    r_speed = _redis_get_int('speed')
-    r_acc = _redis_get_float('acc')
+    r_lat = _shm_get_float('lat')
+    r_lon = _shm_get_float('long')
+    r_speed = _shm_get_int('speed')
+    r_acc = _shm_get_float('acc')
 
     speed_int = int(speed) if speed is not None else None
 
     mismatches = []
     if r_lat is None or abs(r_lat - float(lat)) > GPS_DEBUG_LATLON_TOL:
-        mismatches.append(f'lat(parsed={lat}, redis={r_lat})')
+        mismatches.append(f'lat(parsed={lat}, shm={r_lat})')
     if r_lon is None or abs(r_lon - float(lon)) > GPS_DEBUG_LATLON_TOL:
-        mismatches.append(f'long(parsed={lon}, redis={r_lon})')
+        mismatches.append(f'long(parsed={lon}, shm={r_lon})')
     if r_speed is None or (speed_int is not None and r_speed != speed_int):
-        mismatches.append(f'speed(parsed_int={speed_int}, redis={r_speed})')
+        mismatches.append(f'speed(parsed_int={speed_int}, shm={r_speed})')
     if r_acc is None or abs(r_acc - float(acc)) > GPS_DEBUG_ACC_TOL:
-        mismatches.append(f'acc(parsed={acc}, redis={r_acc})')
+        mismatches.append(f'acc(parsed={acc}, shm={r_acc})')
 
     if mismatches:
-        logging.warning('[%s] Redis mismatch: %s', source, '; '.join(mismatches))
+        logging.warning('[%s] SHM mismatch: %s', source, '; '.join(mismatches))
 
 
 def _ecef_to_latlon(x, y, z):
@@ -365,13 +370,7 @@ def read_from_gpsd():
 
                 _debug_log_sample(source='gpsd', raw_line=new_data if GPS_DEBUG_LOG_RAW else None, lat=lat2, lon=lon2, speed=speed, acc=acc)
 
-                pipe = redis_client.pipeline(transaction=False)
-                pipe.set('acc', acc)
-                if 0 <= speed < 300:
-                    pipe.set('speed', int(speed))
-                pipe.set('lat', lat2)
-                pipe.set('long', lon2)
-                pipe.execute()
+                gps_writer.write(lat2, lon2, int(speed) if 0 <= speed < 300 else 0, acc, time.time())
 
                 _debug_compare_after_write(lat2, lon2, speed, acc, source='gpsd', raw_line=new_data if GPS_DEBUG_LOG_RAW else None)
 
@@ -444,22 +443,14 @@ def read_gps_data():
             if lat2 is None or lon2 is None:
                 continue
 
-            # speed = calculate_speed(lat1, lon1, t1, lat2, lon2, t2)
-            pipe = redis_client.pipeline(transaction=False)
-            pipe.set('acc', acc)
-            if 0 <= speed < 300:
-                pipe.set('speed', int(speed))
-
             if lat2 != 0 and lon2 != 0:
-                pipe.set('lat', lat2)
-                pipe.set('long', lon2)
-                pipe.execute()
+                gps_writer.write(lat2, lon2, int(speed) if 0 <= speed < 300 else 0, acc, time.time())
 
                 _debug_compare_after_write(lat2, lon2, speed, acc, source='serial', raw_line=data)
 
                 _publish_gps_mqtt(lat2, lon2, speed, acc)
             else:
-                pipe.execute()
+                gps_writer.write(0.0, 0.0, int(speed) if 0 <= speed < 300 else 0, acc, time.time())
 
                 if time.time() - last_gps_write >= THROTTLE_SECONDS:
                     store_worker.submit_latest(lat2, lon2, speed)

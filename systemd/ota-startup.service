@@ -1,6 +1,6 @@
 [Unit]
 Description=OTA Startup Service - Check for updates on boot
-After=network-online.target mariadb.service
+After=network-online.target
 Wants=network-online.target
 Before=facial1.service get_gps_data1.service
 
@@ -11,6 +11,8 @@ User=pi
 Group=pi
 
 WorkingDirectory=/home/pi/facial-tracker-firmware
+
+Environment=DB_PATH=/home/pi/facial-tracker-firmware/data/blinksmart.db
 
 ExecStart=/home/pi/facial-tracker-firmware/venv/bin/python \
           /home/pi/facial-tracker-firmware/ota_startup.py

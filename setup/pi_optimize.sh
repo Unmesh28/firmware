@@ -6,7 +6,7 @@
 #
 # What this does:
 #   1. Overclock CPU to 1200MHz (safe with heatsink, ~20% faster inference)
-#   2. Set gpu_mem=16 (frees 48MB RAM — no GPU needed for headless ML)
+#   2. Set gpu_mem=64 (minimum for camera ISP — below 64 breaks capture)
 #   3. Replace SD card swap with ZRAM (fast compressed RAM swap)
 #   4. Lock CPU governor to 'performance' (no clock ramping delays)
 #   5. Mount /tmp and /var/log on tmpfs (eliminates SD card I/O stalls)
@@ -42,7 +42,10 @@ sed -i '/^arm_freq=/d' "$CONFIG"
 sed -i '/^over_voltage=/d' "$CONFIG"
 sed -i '/^core_freq=/d' "$CONFIG"
 sed -i '/^gpu_mem=/d' "$CONFIG"
+sed -i '/^start_x=/d' "$CONFIG"
+sed -i '/^camera_auto_detect=/d' "$CONFIG"
 sed -i '/^#.*pi_optimize/d' "$CONFIG"
+sed -i '/^dtparam=watchdog=/d' "$CONFIG"
 
 # Append our settings
 cat >> "$CONFIG" << 'BOOT_EOF'
@@ -51,11 +54,20 @@ cat >> "$CONFIG" << 'BOOT_EOF'
 arm_freq=1200
 over_voltage=2
 core_freq=500
-gpu_mem=16
+gpu_mem=64
+start_x=1
+camera_auto_detect=0
+# start_x=1 enables legacy camera stack (V4L2) needed by OpenCV VideoCapture
+# camera_auto_detect=0 disables libcamera so legacy stack takes over
+# gpu_mem=64 is minimum for camera ISP — below this, capture is unreliable
+temp_soft_limit=80
+force_turbo=0
+# Hardware watchdog: reboots Pi if kernel hangs (15s timeout)
+dtparam=watchdog=on
 BOOT_EOF
 
-echo "  arm_freq=1200 (20% overclock, stable with heatsink)"
-echo "  gpu_mem=16 (frees 48MB RAM for ML)"
+echo "  arm_freq=1200 (20% overclock, stable with active fan cooling)"
+echo "  gpu_mem=64 (minimum for camera ISP — below 64 breaks capture)"
 REBOOT_NEEDED=1
 
 # ─────────────────────────────────────────────
@@ -151,8 +163,8 @@ cp "$FSTAB" "${FSTAB}.backup.$(date +%Y%m%d)" 2>/dev/null || true
 
 # Add tmpfs entries if not already present
 if ! grep -q 'tmpfs.*/tmp' "$FSTAB"; then
-    echo 'tmpfs /tmp tmpfs defaults,noatime,nosuid,size=32m 0 0' >> "$FSTAB"
-    echo "  Added /tmp tmpfs (32MB)"
+    echo 'tmpfs /tmp tmpfs defaults,noatime,nosuid,size=64m 0 0' >> "$FSTAB"
+    echo "  Added /tmp tmpfs (64MB)"
 fi
 
 if ! grep -q 'tmpfs.*/var/log' "$FSTAB"; then
@@ -197,12 +209,12 @@ echo "[6/6] Disabling unnecessary system services"
 
 # Services that waste CPU/RAM on a headless embedded device
 DISABLE_SERVICES=(
-    avahi-daemon          # mDNS — not needed for direct IP access
     bluetooth             # No Bluetooth needed
     hciuart               # Bluetooth UART
     triggerhappy          # Hotkey daemon — no keyboard
     ModemManager          # No cellular modem
-    wpa_supplicant        # Only if using NetworkManager instead
+    # NOTE: Do NOT disable wpa_supplicant (breaks WiFi)
+    # NOTE: Do NOT disable avahi-daemon if using blinksmart.local for SSH
 )
 
 for svc in "${DISABLE_SERVICES[@]}"; do
@@ -213,6 +225,28 @@ for svc in "${DISABLE_SERVICES[@]}"; do
     fi
 done
 
+# Also disable apt auto-update timers (waste I/O and bandwidth)
+for timer in man-db.timer apt-daily.timer apt-daily-upgrade.timer; do
+    systemctl disable "$timer" 2>/dev/null || true
+    systemctl stop "$timer" 2>/dev/null || true
+done
+echo "  Disabled: apt-daily timers"
+
+# ─────────────────────────────────────────────
+# 7. HARDWARE WATCHDOG
+# ─────────────────────────────────────────────
+echo ""
+echo "[7] Enabling hardware watchdog (auto-reboot on system hang)"
+
+# systemd runtime watchdog: reboots Pi if kernel/systemd hangs for 15s
+mkdir -p /etc/systemd/system.conf.d
+cat > /etc/systemd/system.conf.d/watchdog.conf << 'WD_EOF'
+[Manager]
+RuntimeWatchdogSec=15
+RebootWatchdogSec=10min
+WD_EOF
+echo "  RuntimeWatchdogSec=15 (reboot if kernel hangs 15s)"
+
 # ─────────────────────────────────────────────
 # SUMMARY
 # ─────────────────────────────────────────────
@@ -221,12 +255,13 @@ echo "=== Optimization Complete ==="
 echo ""
 echo "Changes applied:"
 echo "  [x] CPU overclock: 1000MHz → 1200MHz (+20%)"
-echo "  [x] GPU memory: 64MB → 16MB (frees 48MB for ML)"
+echo "  [x] GPU memory: kept at 64MB (minimum for camera ISP)"
 echo "  [x] ZRAM swap: 256MB LZ4 (replaces slow SD card swap)"
 echo "  [x] CPU governor: performance (no clock ramping)"
-echo "  [x] tmpfs: /tmp (32MB) + /var/log (16MB) on RAM"
+echo "  [x] tmpfs: /tmp (64MB) + /var/log (16MB) on RAM"
 echo "  [x] Kernel: tuned vm.swappiness, dirty ratios"
 echo "  [x] Disabled unused services (bluetooth, avahi, etc.)"
+echo "  [x] Hardware watchdog: auto-reboot on 15s system hang"
 echo ""
 
 if [ "$REBOOT_NEEDED" -eq 1 ]; then

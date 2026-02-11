@@ -1,0 +1,18 @@
+# Credentials
+.env
+
+# Python
+__pycache__/
+*.pyc
+venv/
+
+# Runtime data
+data/
+logs/
+uploads/
+backups/
+releases/
+current
+
+# OS
+.DS_Store

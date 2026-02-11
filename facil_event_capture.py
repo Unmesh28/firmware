@@ -11,13 +11,31 @@ import sys
 import time
 import gc
 import fcntl
+import socket
 from datetime import datetime
 from queue import Queue
 import threading
-import redis
+
+
+# --- systemd watchdog: notify systemd we're alive ---
+_sd_notify_sock = None
+
+def _sd_notify(msg):
+    """Send sd_notify message to systemd (READY=1, WATCHDOG=1, etc.)."""
+    global _sd_notify_sock
+    addr = os.getenv('NOTIFY_SOCKET')
+    if not addr:
+        return
+    try:
+        if _sd_notify_sock is None:
+            _sd_notify_sock = socket.socket(socket.AF_UNIX, socket.SOCK_DGRAM)
+            if addr[0] == '@':
+                addr = '\0' + addr[1:]
+            _sd_notify_sock.connect(addr)
+        _sd_notify_sock.sendall(msg.encode())
+    except Exception:
+        _sd_notify_sock = None
 import RPi.GPIO as GPIO
-import base64
-import requests
 from store_locally import add_gps_data
 from log import log_info, log_error
 from get_device_id import get_device_id_from_db, get_auth_key_from_db
@@ -25,7 +43,7 @@ from get_user_info import get_user_info
 from get_configure import get_configure
 from facial_tracking.facialTracking import FacialTracker
 import facial_tracking.conf as conf
-from blnk_led import stop_blinking, start_blinking, refresh_blinking
+from blnk_led import stop_blinking, start_blinking, refresh_blinking, update_led
 from buzzer_controller import buzz_for, start_continuous_buzz, stop_continuous_buzz
 from event_capture import init_event_capture, get_event_buffer, shutdown_event_capture
 
@@ -92,8 +110,9 @@ def acquire_lock():
         print("Kill existing process first: pkill -f facil_event_capture.py")
         sys.exit(1)
 
-# Initialize Redis client
-redis_client = redis.Redis(host='127.0.0.1', port=6379)
+# Initialize shared memory GPS reader (replaces Redis)
+from gps_shm import GPSReader
+gps_reader = GPSReader()
 
 # Get device information from the database
 device_id = get_device_id_from_db()
@@ -131,9 +150,33 @@ event_buffer = init_event_capture(
 VERIFICATION_INTERVAL_SECONDS = 15 * 60  # 15 minutes
 VERIFICATION_API_URL = "https://api.copilotai.click/api/driver-verification/capture"
 
-# NoFace buzzer settings
+# NoFace buzzer settings (defaults — overridden by DB config)
 NO_FACE_THRESHOLD = 2.0  # seconds before buzzing
 BUZZER_DURATION = 1.7    # seconds
+
+# --- Runtime settings from DB (re-read periodically) ---
+_settings_last_read = 0
+_settings_read_interval = 30  # re-read every 30 seconds
+led_blink_enabled = True
+noface_enabled = False
+noface_threshold = 2.0
+
+def _reload_settings():
+    """Re-read settings from DB so changes take effect without restart."""
+    global led_blink_enabled, noface_enabled, noface_threshold, _settings_last_read
+    now = time.time()
+    if now - _settings_last_read < _settings_read_interval:
+        return
+    _settings_last_read = now
+    try:
+        val = get_configure('led_blink_enabled')
+        led_blink_enabled = val != '0' if val is not None else True
+        val = get_configure('noface_enabled')
+        noface_enabled = val == '1' if val is not None else False
+        val = get_configure('noface_threshold')
+        noface_threshold = float(val) if val else 2.0
+    except Exception:
+        pass
 
 def capture_and_send_verification_image(frame, lat, long2, speed, acc):
     """
@@ -141,6 +184,8 @@ def capture_and_send_verification_image(frame, lat, long2, speed, acc):
     This verifies that the registered driver is still driving the vehicle.
     """
     try:
+        import base64
+        import requests
         # Encode frame to JPEG
         encode_param = [cv2.IMWRITE_JPEG_QUALITY, 85]
         _, encoded = cv2.imencode('.jpg', frame, encode_param)
@@ -242,7 +287,8 @@ def map_driver_status(status):
     return status_map.get(status, status)
 
 def decode_or_default(value, default='0'):
-    return value.decode() if value else default
+    """Legacy helper kept for compatibility."""
+    return value.decode() if isinstance(value, bytes) and value else str(value) if value else default
 
 _last_idle_send_time = 0
 
@@ -347,12 +393,9 @@ def main():
     # 15-minute interval driver verification
     last_verification_time = 0
 
-    # Redis pipeline for batched reads (1 round-trip instead of 4)
-    redis_pipe = redis_client.pipeline(transaction=False)
-
-    # GPS cache to avoid redundant Redis reads when idle
-    last_redis_read_time = 0
-    redis_read_interval = 0.5  # Read Redis at most 2x/sec when idle
+    # GPS cache — read from shared memory at most 2x/sec
+    last_gps_read_time = 0
+    gps_read_interval = 0.5
     cached_speed = '0'
     cached_lat = '0.0'
     cached_long = '0.0'
@@ -374,22 +417,37 @@ def main():
     log_info(f"Capture: {conf.FRAME_W}x{conf.FRAME_H}, Detection: {DETECT_W}x{DETECT_H}, HEADLESS: {conf.HEADLESS}, refine_landmarks: {conf.REFINE_LANDMARKS}")
     log_info(f"Driver verification interval: {VERIFICATION_INTERVAL_SECONDS // 60} minutes")
 
+    # Load settings from DB on startup
+    _reload_settings()
+    log_info(f"Settings: LED blink={led_blink_enabled}, NoFace alert={noface_enabled}, NoFace threshold={noface_threshold}s")
+
+    # Tell systemd we're ready (for Type=notify)
+    _sd_notify('READY=1')
+
+    # Watchdog ping interval (ping every 10s, systemd timeout is 30s)
+    _last_watchdog_ping = 0
+    _watchdog_interval = 10
+
     try:
         while cap.isOpened():
             current_time = time.time()
 
-            # Batch Redis reads using pipeline (1 round-trip instead of 4)
-            if current_time - last_redis_read_time >= redis_read_interval:
-                last_redis_read_time = current_time
-                redis_pipe.get('speed')
-                redis_pipe.get('lat')
-                redis_pipe.get('long')
-                redis_pipe.get('acc')
-                results = redis_pipe.execute()
-                cached_speed = decode_or_default(results[0])
-                cached_lat = decode_or_default(results[1], '0.0')
-                cached_long = decode_or_default(results[2], '0.0')
-                cached_acc = decode_or_default(results[3], '0')
+            # Ping systemd watchdog — proves main loop is alive
+            if current_time - _last_watchdog_ping >= _watchdog_interval:
+                _last_watchdog_ping = current_time
+                _sd_notify('WATCHDOG=1')
+
+            # Re-read settings from DB periodically (every 30s)
+            _reload_settings()
+
+            # Read GPS from shared memory (single read, no network round-trip)
+            if current_time - last_gps_read_time >= gps_read_interval:
+                last_gps_read_time = current_time
+                lat_f, lon_f, speed_i, acc_f, _ts = gps_reader.read()
+                cached_speed = str(speed_i)
+                cached_lat = str(lat_f) if lat_f != 0.0 else '0.0'
+                cached_long = str(lon_f) if lon_f != 0.0 else '0.0'
+                cached_acc = str(acc_f)
 
             speed = cached_speed
             lat = cached_lat
@@ -452,12 +510,12 @@ def main():
                 if facial_tracker.eyes_status == 'eye closed':
                     driver_status = 'Sleeping'
                     start_continuous_buzz()   # Refreshes watchdog each frame
-                    refresh_blinking()        # Refreshes LED watchdog each frame
-                    # Start blinking only if not already blinking (avoid thread storm)
-                    with _blink_thread_lock:
-                        if _blink_thread is None or not _blink_thread.is_alive():
-                            _blink_thread = threading.Thread(target=start_blinking, daemon=True)
-                            _blink_thread.start()
+                    if led_blink_enabled:
+                        refresh_blinking()        # Refreshes LED watchdog each frame
+                        with _blink_thread_lock:
+                            if _blink_thread is None or not _blink_thread.is_alive():
+                                _blink_thread = threading.Thread(target=start_blinking, daemon=True)
+                                _blink_thread.start()
                     # Save annotated image (throttled 1/sec, queued to worker)
                     if current_time - last_save_time >= SAVE_IMAGE_INTERVAL:
                         last_save_time = current_time
@@ -466,11 +524,12 @@ def main():
                 elif facial_tracker.yawn_status == 'yawning':
                     driver_status = 'Yawning'
                     start_continuous_buzz()   # Refreshes watchdog each frame
-                    refresh_blinking()        # Refreshes LED watchdog each frame
-                    with _blink_thread_lock:
-                        if _blink_thread is None or not _blink_thread.is_alive():
-                            _blink_thread = threading.Thread(target=start_blinking, daemon=True)
-                            _blink_thread.start()
+                    if led_blink_enabled:
+                        refresh_blinking()        # Refreshes LED watchdog each frame
+                        with _blink_thread_lock:
+                            if _blink_thread is None or not _blink_thread.is_alive():
+                                _blink_thread = threading.Thread(target=start_blinking, daemon=True)
+                                _blink_thread.start()
                     if current_time - last_save_time >= SAVE_IMAGE_INTERVAL:
                         last_save_time = current_time
                         _enqueue_save_image(frame.copy(), folder_path, speed, lat, long2, driver_status)
@@ -495,9 +554,9 @@ def main():
                 # Calculate how long NoFace has persisted
                 no_face_duration = current_time - no_face_start_time
 
-                # Buzz every 2 seconds continuously while NoFace persists
-                if no_face_duration >= NO_FACE_THRESHOLD:
-                    buzz_for(BUZZER_DURATION)  # Self-limiting: runs for duration then stops
+                # Buzz when NoFace persists beyond threshold (configurable via Settings)
+                if noface_enabled and no_face_duration >= noface_threshold:
+                    buzz_for(BUZZER_DURATION)
                     no_face_buzzer_triggered = True
                     log_info(f"NoFace detected for {no_face_duration:.1f}s - buzzer activated")
                     no_face_start_time = current_time  # Reset timer for next interval
