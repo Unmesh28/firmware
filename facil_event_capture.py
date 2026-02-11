@@ -553,8 +553,8 @@ def main():
                     driver_status=driver_status
                 )
 
-            # Send GPS data periodically for Active status (for live tracking)
-            if driver_status == 'Active' and float(lat) != 0.0 and float(long2) != 0.0:
+            # Send GPS data + driver status periodically (for all statuses)
+            if float(lat) != 0.0 and float(long2) != 0.0:
                 if current_time - last_gps_send_time >= gps_send_interval:
                     _enqueue_gps(lat, long2, speed, str(datetime.now()), driver_status, acc)
                     last_gps_send_time = current_time
