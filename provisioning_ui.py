@@ -189,8 +189,9 @@ HTML_TEMPLATE = '''
             text-align: center;
         }
         .camera-container img {
-            max-width: 100%;
+            width: 100%;
             height: auto;
+            display: block;
         }
         .wifi-network {
             display: flex;
@@ -1192,8 +1193,8 @@ def generate_camera_frames():
         with camera_lock:
             if camera is None:
                 camera = cv2.VideoCapture(0)
-                camera.set(cv2.CAP_PROP_FRAME_WIDTH, 320)
-                camera.set(cv2.CAP_PROP_FRAME_HEIGHT, 240)
+                camera.set(cv2.CAP_PROP_FRAME_WIDTH, 640)
+                camera.set(cv2.CAP_PROP_FRAME_HEIGHT, 480)
                 camera.set(cv2.CAP_PROP_FPS, 10)
         
         while True:
