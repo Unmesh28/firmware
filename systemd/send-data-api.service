@@ -13,7 +13,7 @@ WorkingDirectory=/home/pi/facial-tracker-firmware
 Environment=PYTHONUNBUFFERED=1
 Environment="PYTHONPATH=/home/pi/facial-tracker-firmware"
 
-Environment=SEND_DATA_POLL_INTERVAL=30
+Environment=SEND_DATA_POLL_INTERVAL=5
 Environment="DB_PATH=/home/pi/facial-tracker-firmware/data/blinksmart.db"
 
 ExecStart=/home/pi/facial-tracker-firmware/venv/bin/python \
