@@ -88,6 +88,11 @@ class EventFrameBuffer:
     # NoFace: save only 1 frame per minute
     NOFACE_INTERVAL_SECONDS = 60
 
+    # Font settings for footer overlay
+    FONT = cv2.FONT_HERSHEY_SIMPLEX
+    FONT_SCALE = 0.4
+    FONT_THICKNESS = 1
+
     def __init__(self, base_events_path: str, upload_callback=None):
         self.base_events_path = base_events_path
         self.upload_callback = upload_callback
@@ -283,6 +288,24 @@ class EventFrameBuffer:
 
                 # Reconstruct numpy array from raw bytes, then JPEG encode
                 frame = np.frombuffer(frame_data.frame_raw, dtype=np.uint8).reshape(frame_data.frame_shape)
+
+                # Draw footer overlay
+                h, w = frame.shape[:2]
+                lat_r = round(float(frame_data.lat), 4) if frame_data.lat else 0.0
+                lon_r = round(float(frame_data.long), 4) if frame_data.long else 0.0
+                footer_text = [
+                    "Sapience Automata 2025",
+                    f"Time:{frame_data.datetime_str}",
+                    f"Lat,Long:{lat_r},{lon_r}",
+                    f"Speed:{frame_data.speed} Km/h"
+                ]
+                cv2.rectangle(frame, (0, h - 30), (w, h), (255, 0, 0), -1)
+                x = 5
+                for text in footer_text:
+                    cv2.putText(frame, text, (x, h - 10), self.FONT, self.FONT_SCALE, (255, 255, 255), self.FONT_THICKNESS, cv2.LINE_AA)
+                    (tw, _), _ = cv2.getTextSize(text, self.FONT, self.FONT_SCALE, self.FONT_THICKNESS)
+                    x += tw + 10
+
                 _, encoded = cv2.imencode('.jpg', frame, encode_param)
                 with open(filepath, 'wb') as f:
                     f.write(encoded.tobytes())
