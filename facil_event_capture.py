@@ -382,10 +382,6 @@ def main():
     last_gps_send_time = 0
     gps_send_interval = 2  # Send GPS every 2 seconds when Active
 
-    # Reuse single threads for LED control instead of spawning new ones each frame
-    _blink_thread = None
-    _blink_thread_lock = threading.Lock()
-
     # Track NoFace detection for buzzer trigger
     no_face_start_time = None
     no_face_buzzer_triggered = False
@@ -511,11 +507,9 @@ def main():
                     driver_status = 'Sleeping'
                     start_continuous_buzz()   # Refreshes watchdog each frame
                     if led_blink_enabled:
+                        start_blinking()          # Activate LED (idempotent)
                         refresh_blinking()        # Refreshes LED watchdog each frame
-                        with _blink_thread_lock:
-                            if _blink_thread is None or not _blink_thread.is_alive():
-                                _blink_thread = threading.Thread(target=start_blinking, daemon=True)
-                                _blink_thread.start()
+                        update_led()              # Actually toggle the GPIO pin
                     # Save annotated image (throttled 1/sec, queued to worker)
                     if current_time - last_save_time >= SAVE_IMAGE_INTERVAL:
                         last_save_time = current_time
@@ -525,11 +519,9 @@ def main():
                     driver_status = 'Yawning'
                     start_continuous_buzz()   # Refreshes watchdog each frame
                     if led_blink_enabled:
+                        start_blinking()          # Activate LED (idempotent)
                         refresh_blinking()        # Refreshes LED watchdog each frame
-                        with _blink_thread_lock:
-                            if _blink_thread is None or not _blink_thread.is_alive():
-                                _blink_thread = threading.Thread(target=start_blinking, daemon=True)
-                                _blink_thread.start()
+                        update_led()              # Actually toggle the GPIO pin
                     if current_time - last_save_time >= SAVE_IMAGE_INTERVAL:
                         last_save_time = current_time
                         _enqueue_save_image(frame.copy(), folder_path, speed, lat, long2, driver_status)
