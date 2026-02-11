@@ -6,6 +6,7 @@ import math
 import threading
 import queue
 import logging
+import redis
 from geopy.distance import geodesic
 from gps3 import gps3
 import time
@@ -31,12 +32,7 @@ def _get_mqtt_publisher():
     return _mqtt_publisher
 
 def _publish_gps_mqtt(lat, lng, speed, acc, driver_status="Active"):
-    """Publish GPS data via MQTT for real-time updates (throttled)"""
-    global _last_mqtt_publish
-    now = time.time()
-    if now - _last_mqtt_publish < MQTT_PUBLISH_INTERVAL:
-        return
-    _last_mqtt_publish = now
+    """Publish GPS data via MQTT for real-time updates"""
     publisher = _get_mqtt_publisher()
     if publisher:
         try:
@@ -45,11 +41,8 @@ def _publish_gps_mqtt(lat, lng, speed, acc, driver_status="Active"):
             logging.debug(f"MQTT publish failed: {e}")
 
 last_gps_write = 0.0
-_last_mqtt_publish = 0.0
-MQTT_PUBLISH_INTERVAL = float(os.getenv('MQTT_PUBLISH_INTERVAL', '2.0'))
 
-from gps_shm import GPSWriter
-gps_writer = GPSWriter()
+redis_client = redis.Redis(host='127.0.0.1', port=6379)
 
 SERIAL_DEVICE_PATH = os.getenv('GPS_SERIAL_DEVICE', '/dev/ttyACM0')
 SERIAL_BAUDRATE = int(os.getenv('GPS_SERIAL_BAUDRATE', '9600'))
@@ -92,31 +85,26 @@ def _debug_log_sample(source, raw_line=None, lat=None, lon=None, speed=None, acc
         )
 
 
-def _shm_get_float(key):
-    """Read a GPS value from shared memory (for debug comparison)."""
+def _redis_get_float(key):
     try:
-        lat, lon, speed, acc, ts = gps_writer._shm.seek(0) or (None,)
-        # Re-read properly
-        from gps_shm import GPSReader
-        reader = GPSReader()
-        lat, lon, speed, acc, ts = reader.read()
-        reader.close()
-        key_map = {'lat': lat, 'long': lon, 'speed': speed, 'acc': acc}
-        return key_map.get(key)
+        v = redis_client.get(key)
+        if v is None:
+            return None
+        if isinstance(v, (bytes, bytearray)):
+            v = v.decode('utf-8', errors='ignore')
+        return float(v)
     except Exception:
         return None
 
 
-def _shm_get_int(key):
-    """Read speed from shared memory (for debug comparison)."""
+def _redis_get_int(key):
     try:
-        from gps_shm import GPSReader
-        reader = GPSReader()
-        lat, lon, speed, acc, ts = reader.read()
-        reader.close()
-        if key == 'speed':
-            return speed
-        return None
+        v = redis_client.get(key)
+        if v is None:
+            return None
+        if isinstance(v, (bytes, bytearray)):
+            v = v.decode('utf-8', errors='ignore')
+        return int(float(v))
     except Exception:
         return None
 
@@ -129,23 +117,25 @@ def _debug_compare_after_write(lat, lon, speed, acc, source, raw_line=None):
 
     _debug_log_sample(source=source, raw_line=raw_line, lat=lat, lon=lon, speed=speed, acc=acc)
 
-    r_lat = _shm_get_float('lat')
-    r_lon = _shm_get_float('long')
-    r_speed = _shm_get_float('speed')
-    r_acc = _shm_get_float('acc')
+    r_lat = _redis_get_float('lat')
+    r_lon = _redis_get_float('long')
+    r_speed = _redis_get_int('speed')
+    r_acc = _redis_get_float('acc')
+
+    speed_int = int(speed) if speed is not None else None
 
     mismatches = []
     if r_lat is None or abs(r_lat - float(lat)) > GPS_DEBUG_LATLON_TOL:
-        mismatches.append(f'lat(parsed={lat}, shm={r_lat})')
+        mismatches.append(f'lat(parsed={lat}, redis={r_lat})')
     if r_lon is None or abs(r_lon - float(lon)) > GPS_DEBUG_LATLON_TOL:
-        mismatches.append(f'long(parsed={lon}, shm={r_lon})')
-    if r_speed is None or (speed is not None and abs(r_speed - float(speed)) > 0.1):
-        mismatches.append(f'speed(parsed={speed}, shm={r_speed})')
+        mismatches.append(f'long(parsed={lon}, redis={r_lon})')
+    if r_speed is None or (speed_int is not None and r_speed != speed_int):
+        mismatches.append(f'speed(parsed_int={speed_int}, redis={r_speed})')
     if r_acc is None or abs(r_acc - float(acc)) > GPS_DEBUG_ACC_TOL:
-        mismatches.append(f'acc(parsed={acc}, shm={r_acc})')
+        mismatches.append(f'acc(parsed={acc}, redis={r_acc})')
 
     if mismatches:
-        logging.warning('[%s] SHM mismatch: %s', source, '; '.join(mismatches))
+        logging.warning('[%s] Redis mismatch: %s', source, '; '.join(mismatches))
 
 
 def _ecef_to_latlon(x, y, z):
@@ -173,10 +163,11 @@ def _ecef_to_latlon(x, y, z):
 # ------------------------ PARSE GPS -------------------------
 def parse_gps_with_pynmea(data):
     try:
+        # print(f"Raw GPS data: {data}")
         parsed_data = pynmea2.parse(data)
         current_datetime = datetime.datetime.now()
 
-        speed = None  # None = sentence has no speed data (e.g. GGA)
+        speed = 0.0
         parsed_timestamp = None
         lat = None
         lon = None
@@ -193,31 +184,31 @@ def parse_gps_with_pynmea(data):
         if hasattr(parsed_data, 'longitude'):
              lon = parsed_data.longitude
 
-        # Extract speed — only RMC and VTG sentences carry speed data
+        # Extract speed based on sentence type
+        has_speed = False
         if isinstance(parsed_data, pynmea2.types.talker.RMC):
             # RMC has speed in knots
+            has_speed = True
             if parsed_data.spd_over_grnd is not None:
                 try:
                    speed = float(parsed_data.spd_over_grnd) * 1.852 # Knots to km/h
                 except (ValueError, TypeError):
                    speed = 0.0
-            else:
-                speed = 0.0
 
         elif isinstance(parsed_data, pynmea2.types.talker.VTG):
             # VTG has speed in km/h
+             has_speed = True
              if parsed_data.spd_over_grnd_kmh is not None:
                 try:
                     speed = float(parsed_data.spd_over_grnd_kmh)
                 except (ValueError, TypeError):
                     speed = 0.0
-             else:
-                speed = 0.0
 
-        return lat, lon, parsed_timestamp, speed
+        return lat, lon, parsed_timestamp, speed, has_speed
 
     except Exception as e:
-        return None, None, None, None
+        # print(f"Error parsing GPS data: {e}")
+        return None, None, None, 0.0, False
 
 
 # ------------------------ CALCULATIONS -------------------------
@@ -370,13 +361,18 @@ def read_from_gpsd():
 
                 _debug_log_sample(source='gpsd', raw_line=new_data if GPS_DEBUG_LOG_RAW else None, lat=lat2, lon=lon2, speed=speed, acc=acc)
 
-                gps_writer.write(lat2, lon2, speed if 0 <= speed < 300 else 0.0, acc, time.time())
+                redis_client.set('acc', acc)
+                if 0 <= speed < 300:
+                    redis_client.set('speed', int(speed))
+
+                redis_client.set('lat', lat2)
+                redis_client.set('long', lon2)
 
                 _debug_compare_after_write(lat2, lon2, speed, acc, source='gpsd', raw_line=new_data if GPS_DEBUG_LOG_RAW else None)
 
-                _publish_gps_mqtt(lat2, lon2, speed, acc)
-
+                # Publish to MQTT throttled to avoid flooding with sub-second duplicates
                 if time.time() - last_gps_write >= THROTTLE_SECONDS:
+                    _publish_gps_mqtt(lat2, lon2, speed, acc)
                     store_worker.submit_latest(lat2, lon2, speed)
                     last_gps_write = time.time()
 
@@ -403,8 +399,8 @@ def read_gps_data():
 
     logging.info('Reading GPS data from serial device: %s', SERIAL_DEVICE_PATH)
 
+    # lat1, lon1, t1 = 0, 0, datetime.datetime.now().replace(tzinfo=None)
     prev_speed = 0.0
-    last_known_speed = 0.0  # Retains last valid speed from RMC/VTG
     global last_gps_write
     THROTTLE_SECONDS = GPS_WRITE_THROTTLE_SECONDS
 
@@ -431,39 +427,42 @@ def read_gps_data():
             if not data or not data.startswith('$') or ',' not in data:
                 continue
 
-            lat2, lon2, t2_parsed, speed = parse_gps_with_pynmea(data)
-
-            # Only update speed when sentence actually has speed (RMC/VTG).
-            # GGA/GSA etc. return speed=None — keep last known speed.
-            if speed is not None:
-                last_known_speed = speed
-            speed = last_known_speed
-
-            # Use current time if parsed time is not available
-            current_timestamp = datetime.datetime.now()
-
-            acc = calculate_acceleration(prev_speed, last_timestamp, speed, current_timestamp)
-
-            _debug_log_sample(source='serial', raw_line=data, lat=lat2, lon=lon2, speed=speed, acc=acc)
+            lat2, lon2, t2_parsed, speed, has_speed = parse_gps_with_pynmea(data)
 
             if lat2 is None or lon2 is None:
                 continue
 
+            # Use current time if parsed time is not available
+            current_timestamp = datetime.datetime.now()
+
+            # Only update speed/acceleration when the sentence carries speed data (RMC/VTG)
+            if has_speed:
+                acc = calculate_acceleration(prev_speed, last_timestamp, speed, current_timestamp)
+                redis_client.set('acc', acc)
+                if 0 <= speed < 300:
+                    redis_client.set('speed', int(speed))
+                last_timestamp = current_timestamp
+                prev_speed = speed
+            else:
+                # Non-speed sentence (e.g. GGA): use last known speed, skip acc update
+                speed = prev_speed
+                acc = 0.0
+
+            _debug_log_sample(source='serial', raw_line=data, lat=lat2, lon=lon2, speed=speed, acc=acc)
+
             if lat2 != 0 and lon2 != 0:
-                gps_writer.write(lat2, lon2, speed, acc, time.time())
+                redis_client.set('lat', lat2)
+                redis_client.set('long', lon2)
 
                 _debug_compare_after_write(lat2, lon2, speed, acc, source='serial', raw_line=data)
 
-                _publish_gps_mqtt(lat2, lon2, speed, acc)
-            else:
-                gps_writer.write(0.0, 0.0, speed, acc, time.time())
+                # Publish to MQTT only when we have a speed-bearing sentence
+                if has_speed:
+                    _publish_gps_mqtt(lat2, lon2, speed, acc)
 
                 if time.time() - last_gps_write >= THROTTLE_SECONDS:
                     store_worker.submit_latest(lat2, lon2, speed)
                     last_gps_write = time.time()
-
-            last_timestamp = current_timestamp
-            prev_speed = speed
 
         except KeyboardInterrupt:
             if ser is not None:
