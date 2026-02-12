@@ -304,12 +304,12 @@ class EventFrameBuffer:
 
                 # Draw footer overlay (no speed — shown above)
                 footer_text = [
-                    "Sapience Automata 2025",
+                    "Sapience Automata 2026",
                     f"Time:{frame_data.datetime_str}",
                     f"Lat,Long:{lat_r},{lon_r}"
                 ]
                 cv2.rectangle(frame, (0, h - 24), (w, h), (255, 0, 0), -1)
-                x = 10
+                x = 20
                 for text in footer_text:
                     cv2.putText(frame, text, (x, h - 8), self.FONT, self.FONT_SCALE, (255, 255, 255), self.FONT_THICKNESS, cv2.LINE_AA)
                     (tw, _), _ = cv2.getTextSize(text, self.FONT, self.FONT_SCALE, self.FONT_THICKNESS)

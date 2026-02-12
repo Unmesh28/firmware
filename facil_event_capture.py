@@ -255,12 +255,12 @@ def save_image(frame, folder_path, speed, lat2, long2, driver_status):
 
     # Draw footer with metadata (no speed — shown above)
     footer_text = [
-        "Sapience Automata 2025",
+        "Sapience Automata 2026",
         f"Time:{timestamp}",
         f"Lat,Long:{lat2},{long2}"
     ]
     cv2.rectangle(frame, (0, h - 24), (w, h), (255, 0, 0), -1)
-    x = 10
+    x = 20
     for text in footer_text:
         cv2.putText(frame, text, (x, h - 8), FONT, FONT_SCALE, (255, 255, 255), FONT_THICKNESS, cv2.LINE_AA)
         (tw, _), _ = cv2.getTextSize(text, FONT, FONT_SCALE, FONT_THICKNESS)
