@@ -379,6 +379,10 @@ def main():
     # Track NoFace detection for buzzer trigger
     no_face_start_time = None
     no_face_buzzer_triggered = False
+    
+    # Track consecutive NoFace frames (5 frames required before triggering alert)
+    no_face_consecutive_frames = 0
+    NO_FACE_FRAME_THRESHOLD = 5  # Trigger NoFace alert after 5 consecutive frames
 
     # 15-minute interval driver verification
     last_verification_time = 0
@@ -493,9 +497,10 @@ def main():
             # During Sleeping/Yawning: call start_continuous_buzz() + refresh_blinking() every frame.
             # When condition clears: explicit stop for instant response, watchdog as safety net.
             if facial_tracker.detected:
-                # Reset NoFace timer when face is detected
+                # Reset NoFace tracking when face is detected
                 no_face_start_time = None
                 no_face_buzzer_triggered = False
+                no_face_consecutive_frames = 0  # Reset consecutive frame counter
 
                 if facial_tracker.eyes_status == 'eye closed':
                     driver_status = 'Sleeping'
@@ -526,26 +531,36 @@ def main():
                     stop_blinking()
                     stop_continuous_buzz()
             else:
-                driver_status = 'NoFace'
-
                 # Immediate stop of continuous alerts (driver not visible)
                 stop_blinking()
                 stop_continuous_buzz()
 
-                # Start tracking NoFace duration
-                if no_face_start_time is None:
-                    no_face_start_time = current_time
-                    no_face_buzzer_triggered = False  # Reset for new NoFace period
+                # Count consecutive NoFace frames
+                no_face_consecutive_frames += 1
 
-                # Calculate how long NoFace has persisted
-                no_face_duration = current_time - no_face_start_time
+                # Only trigger NoFace alert after 5 consecutive frames
+                if no_face_consecutive_frames >= NO_FACE_FRAME_THRESHOLD:
+                    driver_status = 'NoFace'
+                    
+                    # Start tracking NoFace duration for buzzer (after 5-frame confirmation)
+                    if no_face_start_time is None:
+                        no_face_start_time = current_time
+                        no_face_buzzer_triggered = False
 
-                # Buzz when NoFace persists beyond threshold (configurable via Settings)
-                if noface_enabled and no_face_duration >= noface_threshold:
-                    buzz_for(BUZZER_DURATION)
-                    no_face_buzzer_triggered = True
-                    log_info(f"NoFace detected for {no_face_duration:.1f}s - buzzer activated")
-                    no_face_start_time = current_time  # Reset timer for next interval
+                    # Calculate how long confirmed NoFace has persisted
+                    no_face_duration = current_time - no_face_start_time
+
+                    # Buzz when NoFace persists beyond threshold (configurable via Settings)
+                    if noface_enabled and no_face_duration >= noface_threshold:
+                        buzz_for(BUZZER_DURATION)
+                        no_face_buzzer_triggered = True
+                        log_info(f"NoFace detected for {no_face_consecutive_frames} frames, {no_face_duration:.1f}s - buzzer activated")
+                        no_face_start_time = current_time  # Reset timer for next interval
+                else:
+                    # Not yet 5 consecutive frames - treat as Active (no alert)
+                    driver_status = 'Active'
+                    no_face_start_time = None
+                    no_face_buzzer_triggered = False
 
             # Add full-res frame to event buffer at throttled rate (2 FPS)
             # Uses 640x480 for image quality; raw bytes stored, JPEG encoding in save worker
