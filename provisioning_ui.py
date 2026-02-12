@@ -381,7 +381,7 @@ HTML_TEMPLATE = '''
                         <div style="font-size:0.75em; color:#888;">Blink LED (GPIO 4) during sleep/yawn detection</div>
                     </div>
                     <label style="position:relative; display:inline-block; width:50px; height:26px; cursor:pointer;">
-                        <input type="checkbox" id="ledBlinkToggle" style="opacity:0; width:0; height:0;">
+                        <input type="checkbox" id="ledBlinkToggle" onchange="updateToggleUI(this, 'ledSlider', 'ledKnob')" style="opacity:0; width:0; height:0;">
                         <span id="ledSlider" style="position:absolute; top:0; left:0; right:0; bottom:0; background:#c92a2a; border-radius:26px; transition:0.3s;"></span>
                         <span id="ledKnob" style="position:absolute; top:3px; left:3px; width:20px; height:20px; background:white; border-radius:50%; transition:0.3s;"></span>
                     </label>
