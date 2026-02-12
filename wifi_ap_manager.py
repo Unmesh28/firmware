@@ -32,7 +32,7 @@ logger = logging.getLogger("wifi_ap_manager")
 class WiFiAPConfig:
     """Configuration for WiFi AP mode"""
     # AP Settings
-    AP_SSID = os.getenv("AP_SSID", "SapienceDevice")
+    AP_SSID = os.getenv("AP_SSID", "copilotai")
     AP_PASSWORD = os.getenv("AP_PASSWORD", "sapience123")  # Min 8 chars for WPA2
     AP_CHANNEL = int(os.getenv("AP_CHANNEL", "6"))
     AP_INTERFACE = os.getenv("AP_INTERFACE", "wlan0")
@@ -62,12 +62,12 @@ class WiFiAPManager:
         self._ap_active = False
         self._original_wpa_conf = None
         
-        # Customize SSID with device ID suffix for uniqueness
+        # Customize SSID with device ID suffix for uniqueness (format: copilotai-xxxx)
         if self.device_id:
-            short_id = self.device_id[-4:] if len(self.device_id) >= 4 else self.device_id
+            short_id = self.device_id[-4:].lower() if len(self.device_id) >= 4 else self.device_id.lower()
             self.ap_ssid = f"{WiFiAPConfig.AP_SSID}-{short_id}"
         else:
-            self.ap_ssid = WiFiAPConfig.AP_SSID
+            self.ap_ssid = f"{WiFiAPConfig.AP_SSID}-0000"
     
     def _get_device_id(self) -> str:
         """Get device ID from serial number or MAC address"""
