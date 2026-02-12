@@ -250,8 +250,8 @@ def save_image(frame, folder_path, speed, lat2, long2, driver_status):
     h, w = frame.shape[:2]
     speed_text = f"{speed} Km/h"
     (sw, sh), _ = cv2.getTextSize(speed_text, FONT, SPEED_FONT_SCALE, SPEED_FONT_THICKNESS)
-    cv2.rectangle(frame, (w - sw - 16, 0), (w, sh + 16), (0, 0, 0), -1)
-    cv2.putText(frame, speed_text, (w - sw - 8, sh + 8), FONT, SPEED_FONT_SCALE, (255, 255, 255), SPEED_FONT_THICKNESS, cv2.LINE_AA)
+    cv2.rectangle(frame, (w - sw - 20, 0), (w, sh + 16), (255, 0, 0), -1)
+    cv2.putText(frame, speed_text, (w - sw - 10, sh + 8), FONT, SPEED_FONT_SCALE, (255, 255, 255), SPEED_FONT_THICKNESS, cv2.LINE_AA)
 
     # Draw footer with metadata (no speed — shown above)
     footer_text = [

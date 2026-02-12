@@ -299,8 +299,8 @@ class EventFrameBuffer:
                 lon_r = round(float(frame_data.long), 4) if frame_data.long else 0.0
                 speed_text = f"{frame_data.speed} Km/h"
                 (sw, sh), _ = cv2.getTextSize(speed_text, self.FONT, self.SPEED_FONT_SCALE, self.SPEED_FONT_THICKNESS)
-                cv2.rectangle(frame, (w - sw - 16, 0), (w, sh + 16), (0, 0, 0), -1)
-                cv2.putText(frame, speed_text, (w - sw - 8, sh + 8), self.FONT, self.SPEED_FONT_SCALE, (255, 255, 255), self.SPEED_FONT_THICKNESS, cv2.LINE_AA)
+                cv2.rectangle(frame, (w - sw - 20, 0), (w, sh + 16), (255, 0, 0), -1)
+                cv2.putText(frame, speed_text, (w - sw - 10, sh + 8), self.FONT, self.SPEED_FONT_SCALE, (255, 255, 255), self.SPEED_FONT_THICKNESS, cv2.LINE_AA)
 
                 # Draw footer overlay (no speed — shown above)
                 footer_text = [
