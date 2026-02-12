@@ -232,8 +232,10 @@ def capture_and_send_verification_image(frame, lat, long2, speed, acc):
 
 # Image annotation settings
 FONT = cv2.FONT_HERSHEY_SIMPLEX
-FONT_SCALE = 0.4
+FONT_SCALE = 0.35
 FONT_THICKNESS = 1
+SPEED_FONT_SCALE = 0.8
+SPEED_FONT_THICKNESS = 2
 
 def save_image(frame, folder_path, speed, lat2, long2, driver_status):
     """Save image with footer overlay. Filename includes metadata for upload_images.py parsing."""
@@ -244,18 +246,23 @@ def save_image(frame, folder_path, speed, lat2, long2, driver_status):
     filename_time = timestamp_obj.strftime("%Y%m%d_%H%M%S%f")
     image_file = os.path.join(folder_path, f"{filename_time}_{driver_status}_{lat2}_{long2}_{speed}.jpg")
 
-    # Draw footer with metadata
+    # Draw speed on upper right corner (big font)
     h, w = frame.shape[:2]
+    speed_text = f"{speed} Km/h"
+    (sw, sh), _ = cv2.getTextSize(speed_text, FONT, SPEED_FONT_SCALE, SPEED_FONT_THICKNESS)
+    cv2.rectangle(frame, (w - sw - 16, 0), (w, sh + 16), (0, 0, 0), -1)
+    cv2.putText(frame, speed_text, (w - sw - 8, sh + 8), FONT, SPEED_FONT_SCALE, (255, 255, 255), SPEED_FONT_THICKNESS, cv2.LINE_AA)
+
+    # Draw footer with metadata (no speed — shown above)
     footer_text = [
         "Sapience Automata 2025",
         f"Time:{timestamp}",
-        f"Lat,Long:{lat2},{long2}",
-        f"Speed:{speed} Km/h"
+        f"Lat,Long:{lat2},{long2}"
     ]
-    cv2.rectangle(frame, (0, h - 30), (w, h), (255, 0, 0), -1)
-    x = 15
+    cv2.rectangle(frame, (0, h - 24), (w, h), (255, 0, 0), -1)
+    x = 10
     for text in footer_text:
-        cv2.putText(frame, text, (x, h - 15), FONT, FONT_SCALE, (255, 255, 255), FONT_THICKNESS, cv2.LINE_AA)
+        cv2.putText(frame, text, (x, h - 8), FONT, FONT_SCALE, (255, 255, 255), FONT_THICKNESS, cv2.LINE_AA)
         (tw, _), _ = cv2.getTextSize(text, FONT, FONT_SCALE, FONT_THICKNESS)
         x += tw + 10
 
